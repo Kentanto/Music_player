@@ -1,10 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from pathlib import Path
+import shutil
 import sys
 from PyInstaller.utils.hooks import collect_submodules
 
-project_dir = Path(SPECPATH)
+project_dir = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 
 hiddenimports = (
     collect_submodules("yt_dlp")
@@ -16,8 +17,11 @@ datas = [
     (str(project_dir / "ui" / "styles.qss"), "ui"),
 ]
 
-if sys.platform == "win32":
-    datas.append((str(project_dir / "ffmpeg" / "bin"), "ffmpeg/bin"))
+ffmpeg_dir = project_dir / "ffmpeg" / "bin"
+if sys.platform == "win32" and ffmpeg_dir.exists():
+    datas.append((str(ffmpeg_dir), "ffmpeg/bin"))
+
+use_upx = shutil.which("upx") is not None
 
 
 analysis = Analysis(
@@ -45,7 +49,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=use_upx,
     console=True,
 )
 
@@ -54,6 +58,6 @@ coll = COLLECT(
     analysis.binaries,
     analysis.datas,
     strip=False,
-    upx=True,
+    upx=use_upx,
     name="MusicEngine",
 )
