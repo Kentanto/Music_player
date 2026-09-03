@@ -24,6 +24,27 @@ QPushButton:hover {
     border: 1px solid #1ed760;
 }
 
+QPushButton#shuffleButton {
+    background-color: #282828;
+    border: 1px solid #404040;
+}
+
+QPushButton#shuffleButton:hover {
+    background-color: #404040;
+    border: 1px solid #707070;
+}
+
+QPushButton#shuffleButton:checked {
+    background-color: #1db954;
+    border: 1px solid #1ed760;
+}
+
+QPushButton#shuffleButton:checked:hover {
+    background-color: #75d99a;
+    color: #121212;
+    border: 1px solid #a1ebbb;
+}
+
 QPushButton:pressed {
     background-color: #1aa34a;
 }

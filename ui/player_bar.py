@@ -59,8 +59,8 @@ class PlayerBar(QWidget):
         controls_layout.addWidget(self.next_btn)
 
         self.shuffle_btn = QPushButton("🔀 Shuffle")
+        self.shuffle_btn.setObjectName("shuffleButton")
         self.shuffle_btn.setCheckable(True)
-        self.shuffle_btn.setStyleSheet("QPushButton:checked { background-color: #1db954; color: white; border: 1px solid #1ed760; }")
         self.shuffle_btn.toggled.connect(self.shuffle_toggled.emit)
         controls_layout.addWidget(self.shuffle_btn)
         

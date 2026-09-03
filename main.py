@@ -46,6 +46,9 @@ class MusicAppController:
         saved_shuffle = get_app_setting("shuffle_enabled", "False")
         self.player.shuffle_enabled = saved_shuffle.lower() == "true"
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
+        self.window.queue_panel.sort_combo.setCurrentText(
+            "Shuffled" if self.player.shuffle_enabled else "Date Added"
+        )
         
         # Restore the last playlist or show playlists first
         self._restore_last_view()
@@ -238,12 +241,16 @@ class MusicAppController:
         return item.get("file_path") or item.get("url")
 
     def handle_shuffle_toggle(self, enabled):
+        self.window.queue_panel.sort_combo.setCurrentText(
+            "Shuffled" if enabled else "Date Added"
+        )
         queue_urls = self.active_queue_urls or self.window.get_current_queue_urls() or self.player._base_queue
         if not queue_urls:
             self.player.shuffle_enabled = False
             self.player._ordered_queue = list(self.player._base_queue)
             self.player.queue = list(self.player._base_queue)
             self.window.player_bar.set_shuffle_state(False)
+            self.window.queue_panel.sort_combo.setCurrentText("Date Added")
             set_app_setting("shuffle_enabled", "False")
             return
 
@@ -452,6 +459,9 @@ class MusicAppController:
 
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
+        self.window.queue_panel.sort_combo.setCurrentText(
+            "Shuffled" if self.player.shuffle_enabled else "Date Added"
+        )
         playlist_songs = get_playlist_songs(playlist_id)
         self.current_results = [
             {"title": title, "url": url, "file_path": file_path, "type": "track"}
