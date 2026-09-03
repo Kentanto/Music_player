@@ -125,12 +125,17 @@ class MusicAppController:
         if not item or item.get("type") == "playlist":
             return
 
-        urls = self.window.get_current_queue_urls()
-        self.active_queue_urls = list(urls)
+        visible_urls = self.window.get_current_queue_urls()
 
         selected_url = self._resolve_url(item)
         if not selected_url:
             return
+
+        if self.player.shuffle_enabled and selected_url in self.player._base_queue:
+            urls = list(self.player._base_queue)
+        else:
+            urls = list(visible_urls)
+        self.active_queue_urls = list(urls)
 
         # ensure item exists in queue
         if selected_url not in urls:
@@ -188,38 +193,12 @@ class MusicAppController:
         if not source:
             return
 
-        actual_queue = list(self.player.queue)
-        if not actual_queue:
-            actual_queue = list(self.active_queue_urls) or self.window.get_current_queue_urls()
-
-        if not actual_queue:
+        actual_queue = list(self.player.queue) or list(self.active_queue_urls) or self.window.get_current_queue_urls()
+        if not actual_queue or source == self.player._current_item:
             return
 
-        next_queue = list(actual_queue)
-        if source in next_queue:
-            if self.player._current_item == source:
-                removed = False
-                for i in range(self.player.index + 1, len(next_queue)):
-                    if next_queue[i] == source:
-                        next_queue.pop(i)
-                        removed = True
-                        break
-                if not removed and 0 <= self.player.index < len(next_queue):
-                    next_queue.pop(self.player.index)
-            else:
-                next_queue.remove(source)
-
-        if self.player._current_item is None or self.player.index < 0:
-            insert_at = 0
-            current_item = source
-        else:
-            insert_at = min(self.player.index + 1, len(next_queue))
-            current_item = self.player._current_item
-
-        next_queue.insert(insert_at, source)
-        self.player.set_queue(next_queue, current_item=current_item)
-
-        self.active_queue_urls = list(next_queue)
+        self.player.queue_next(source)
+        self.active_queue_urls = list(self.player.queue)
         self._refresh_queue_display()
     
     def handle_next_autoplay(self):
@@ -467,6 +446,15 @@ class MusicAppController:
             {"title": title, "url": url, "file_path": file_path, "type": "track"}
             for title, url, file_path in playlist_songs
         ]
+        self.active_queue_urls = [
+            track.get("file_path") or track.get("url")
+            for track in self.current_results
+            if track.get("file_path") or track.get("url")
+        ]
+        current_item = self.player._current_item
+        if current_item not in self.active_queue_urls:
+            current_item = self.active_queue_urls[0] if self.active_queue_urls else None
+        self.player.set_queue(self.active_queue_urls, current_item=current_item)
         self._refresh_queue_display()
         set_app_setting("last_view", "playlist")
         set_app_setting("last_playlist_id", str(playlist_id))
