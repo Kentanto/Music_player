@@ -18,11 +18,11 @@ datas = [
 ]
 
 ffmpeg_dir = project_dir / "ffmpeg" / "bin"
+
 if sys.platform == "win32" and ffmpeg_dir.exists():
     datas.append((str(ffmpeg_dir), "ffmpeg/bin"))
 
 use_upx = shutil.which("upx") is not None
-
 
 analysis = Analysis(
     [str(project_dir / "main.py")],
@@ -43,7 +43,6 @@ exe = EXE(
     pyz,
     analysis.scripts,
     analysis.binaries,
-    analysis.datas,
     [],
     name="MusicEngine",
     debug=False,
@@ -51,6 +50,8 @@ exe = EXE(
     strip=False,
     upx=use_upx,
     console=True,
+    exclude_binaries=True,
+
 )
 
 coll = COLLECT(
