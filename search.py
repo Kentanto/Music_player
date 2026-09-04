@@ -66,6 +66,12 @@ def search_youtube(query, limit=10, max_duration=600):
             "title": entry.get("title"),
             "url": url,
             "thumbnail": thumbnail,
+            "artist": (
+                entry.get("artist")
+                or entry.get("creator")
+                or entry.get("uploader")
+                or entry.get("channel")
+            ),
             "duration": None  # Duration will be checked at playback
         })
 

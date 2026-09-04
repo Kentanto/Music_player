@@ -1,5 +1,5 @@
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QPixmap
 
 
@@ -8,6 +8,7 @@ class CoverWidget(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._cover_pixmap = QPixmap()
         self.init_ui()
     
     def init_ui(self):
@@ -15,11 +16,15 @@ class CoverWidget(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setAlignment(Qt.AlignCenter)
         
-        # Cover art placeholder
+        # Let the artwork fill the available pane instead of letterboxing.
         self.cover_label = QLabel("🎵")
         self.cover_label.setFont(QFont("Arial", 80))
         self.cover_label.setAlignment(Qt.AlignCenter)
-        self.cover_label.setMinimumSize(200, 200)
+        self.cover_label.setMinimumSize(240, 240)
+        self.cover_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.cover_label.setStyleSheet(
+            "QLabel { background-color: #121212; border: 1px solid #404040; }"
+        )
         layout.addWidget(self.cover_label)
         
         # Song title
@@ -49,11 +54,37 @@ class CoverWidget(QWidget):
     
     def set_cover_art(self, pixmap):
         """Set cover art image"""
-        if pixmap:
-            scaled = pixmap.scaledToWidth(200, Qt.SmoothTransformation)
-            self.cover_label.setPixmap(scaled)
+        if pixmap and not pixmap.isNull():
+            self._cover_pixmap = pixmap
+            self.cover_label.setText("")
+            self._fit_cover_art()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_cover_art()
+
+    def _fit_cover_art(self):
+        if self._cover_pixmap.isNull():
+            return
+
+        width = self.cover_label.width()
+        height = self.cover_label.height()
+        if width <= 0 or height <= 0:
+            return
+
+        scaled = self._cover_pixmap.scaled(
+            width,
+            height,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        x_offset = max(0, (scaled.width() - width) // 2)
+        y_offset = max(0, (scaled.height() - height) // 2)
+        self.cover_label.setPixmap(scaled.copy(x_offset, y_offset, width, height))
+
     def clear_cover_art(self):
         """Restore the cover art placeholder."""
+        self._cover_pixmap = QPixmap()
         self.cover_label.setPixmap(QPixmap())
         self.cover_label.setText("🎵")
     

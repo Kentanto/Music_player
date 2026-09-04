@@ -91,9 +91,17 @@ def init_db():
         CREATE TABLE IF NOT EXISTS songs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT,
-            url TEXT UNIQUE
+            url TEXT UNIQUE,
+            artist TEXT,
+            thumbnail TEXT
         )
         """)
+
+        columns = {row[1] for row in c.execute("PRAGMA table_info(songs)")}
+        if "artist" not in columns:
+            c.execute("ALTER TABLE songs ADD COLUMN artist TEXT")
+        if "thumbnail" not in columns:
+            c.execute("ALTER TABLE songs ADD COLUMN thumbnail TEXT")
 
         c.execute("""
         CREATE TABLE IF NOT EXISTS stream_cache (
@@ -139,12 +147,16 @@ def init_db():
         conn.commit()
 
 
-def save_song(title, url):
+def save_song(title, url, artist=None, thumbnail=None):
     with sqlite3.connect(DB) as conn:
         c = conn.cursor()
         c.execute(
-            "INSERT OR IGNORE INTO songs (title, url) VALUES (?, ?)",
-            (title, url)
+            "INSERT INTO songs (title, url, artist, thumbnail) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(url) DO UPDATE SET "
+            "title=COALESCE(excluded.title, songs.title), "
+            "artist=COALESCE(excluded.artist, songs.artist), "
+            "thumbnail=COALESCE(excluded.thumbnail, songs.thumbnail)",
+            (title, url, artist, thumbnail)
         )
         c.execute("SELECT id FROM songs WHERE url=?", (url,))
         row = c.fetchone()
@@ -381,17 +393,29 @@ def download_audio_to_folder(url, title, folder):
             target_path = os.path.join(folder, f"{safe_title} - {video_id}.mp3")
             if os.path.exists(target_path):
                 download_thumbnail(info.get("thumbnail"), target_path)
+                update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                 return target_path
 
             for ext in ["mp3", "m4a", "opus", "wav", "aac"]:
                 alt_path = os.path.join(folder, f"{safe_title} - {video_id}.{ext}")
                 if os.path.exists(alt_path):
                     download_thumbnail(info.get("thumbnail"), alt_path)
+                    update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                     return alt_path
     except Exception:
         return None
 
     return None
+
+
+def _artist_from_info(info):
+    """Choose the most useful artist field yt-dlp exposes for a video."""
+    return (
+        info.get("artist")
+        or info.get("creator")
+        or info.get("uploader")
+        or info.get("channel")
+    )
 
 
 def backfill_thumbnails():
@@ -436,7 +460,8 @@ def backfill_thumbnails():
             if not file_path or not os.path.exists(file_path):
                 print(f"[thumbnail-backfill] Skipped missing file: {file_path}", flush=True)
                 continue
-            if os.path.exists(thumbnail_path_for_audio(file_path)):
+            metadata = get_track_metadata(file_path)
+            if metadata.get("artist") and metadata.get("thumbnail"):
                 print(f"[thumbnail-backfill] Already has artwork: {file_path}", flush=True)
                 continue
             try:
@@ -456,6 +481,22 @@ def backfill_thumbnails():
                 if not info.get("thumbnail") and info.get("id"):
                     info["thumbnail"] = f"https://i.ytimg.com/vi/{info['id']}/hqdefault.jpg"
                 download_thumbnail(info.get("thumbnail"), file_path)
+                title = info.get("title") or Path(file_path).stem
+                artist = _artist_from_info(info)
+                song_id = save_song(title, lookup_url, artist, info.get("thumbnail"))
+                playlist_row = None
+                with sqlite3.connect(DB) as conn:
+                    playlist_row = conn.execute(
+                        "SELECT id FROM playlists WHERE folder=?",
+                        (str(Path(file_path).parent),),
+                    ).fetchone()
+                    if song_id and playlist_row:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO playlist_songs "
+                            "(playlist_id, song_id, file_path) VALUES (?, ?, ?)",
+                            (playlist_row[0], song_id, str(file_path)),
+                        )
+                    conn.commit()
             except Exception as error:
                 print(f"[thumbnail-backfill] Failed for {file_path}: {error}", flush=True)
                 continue
@@ -478,3 +519,34 @@ def get_cached_stream(url):
         c.execute("SELECT stream_url FROM stream_cache WHERE url=?", (url,))
         row = c.fetchone()
         return row[0] if row else None
+
+
+def update_song_metadata(url, title=None, artist=None, thumbnail=None):
+    """Update metadata for a song already linked by its YouTube URL."""
+    if not url:
+        return
+
+    with sqlite3.connect(DB) as conn:
+        conn.execute(
+            "UPDATE songs SET title=COALESCE(?, title), artist=COALESCE(?, artist), "
+            "thumbnail=COALESCE(?, thumbnail) WHERE url=?",
+            (title, artist, thumbnail, url),
+        )
+        conn.commit()
+
+
+def get_track_metadata(file_path):
+    """Return database metadata linked to a downloaded audio file."""
+    if not file_path:
+        return {}
+
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute(
+            "SELECT s.title, s.artist, s.thumbnail, s.url "
+            "FROM playlist_songs ps JOIN songs s ON s.id = ps.song_id "
+            "WHERE ps.file_path=? LIMIT 1",
+            (str(file_path),),
+        ).fetchone()
+    if not row:
+        return {}
+    return {"title": row[0], "artist": row[1], "thumbnail": row[2], "url": row[3]}

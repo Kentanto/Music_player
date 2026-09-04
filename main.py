@@ -20,6 +20,7 @@ from db import (
     set_app_setting,
     backfill_thumbnails,
     thumbnail_path_for_audio,
+    get_track_metadata,
 )
 from metadata_fetcher import MetadataFetcher
 
@@ -382,6 +383,7 @@ class MusicAppController:
             return
 
         title = None
+        artist = None
         artwork = None
 
         queue_sources = []
@@ -396,17 +398,25 @@ class MusicAppController:
                 continue
             if track.get("file_path") and current_item == track.get("file_path"):
                 title = track.get("title") or track.get("file_path") or "Unknown track"
-                artwork = thumbnail_path_for_audio(track["file_path"])
+                metadata = get_track_metadata(track["file_path"])
+                title = metadata.get("title") or title
+                artist = metadata.get("artist")
+                artwork = (
+                    thumbnail_path_for_audio(track["file_path"])
+                    if Path(thumbnail_path_for_audio(track["file_path"])).exists()
+                    else metadata.get("thumbnail")
+                )
                 break
             if track.get("url") and current_item == track.get("url"):
                 title = track.get("title") or track.get("file_path") or "Unknown track"
+                artist = track.get("artist")
                 artwork = track.get("thumbnail")
                 break
 
         if title is None and isinstance(current_item, str):
             title = current_item.split("/")[-1] if current_item else "Unknown track"
 
-        self.window.cover_widget.set_track_info(title or "Unknown track")
+        self.window.cover_widget.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self._set_cover_art(artwork)
         self.window.player_bar.set_track_info(title or "Unknown track")
 
