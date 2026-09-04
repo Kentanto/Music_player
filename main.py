@@ -23,6 +23,7 @@ from db import (
     get_track_metadata,
 )
 from metadata_fetcher import MetadataFetcher
+from spotify_download import SpotifyImportWorker
 
 # Suppress all warnings
 warnings.filterwarnings("ignore")
@@ -37,6 +38,7 @@ class MusicAppController:
         self.current_results = []
         self.metadata_fetcher = None  # Background thread for duration checking
         self.thumbnail_backfill = None
+        self.spotify_import_worker = None
         self.active_queue_urls = []
         self.current_playlist_id = None
         
@@ -94,6 +96,7 @@ class MusicAppController:
         self.window.shuffle_toggled.connect(self.handle_shuffle_toggle)
         self.window.load_playlists.connect(self.handle_load_playlists)
         self.window.add_to_playlist.connect(self.handle_add_to_playlist)
+        self.window.import_list_requested.connect(self.handle_import_list)
         self.window.open_playlist_requested.connect(self.handle_open_playlist)
         self.window.volume_changed.connect(self.handle_volume_change)
         self.window.seek_requested.connect(self.handle_seek)
@@ -287,6 +290,50 @@ class MusicAppController:
         set_app_setting("last_view", "playlists")
         print(f"Loaded {len(playlists)} playlists")
 
+    def handle_import_list(self):
+        """Ask for a Spotify URL and import it without blocking the UI."""
+        if self.spotify_import_worker and self.spotify_import_worker.isRunning():
+            return
+
+        playlist_url, ok = QInputDialog.getText(
+            self.window,
+            "Import List",
+            "Spotify playlist URL:",
+            text="https://open.spotify.com/playlist/",
+        )
+        playlist_url = playlist_url.strip()
+        if not ok or not playlist_url:
+            return
+        if "spotify.com/playlist/" not in playlist_url:
+            QMessageBox.warning(
+                self.window,
+                "Import List",
+                "Please enter a valid Spotify playlist URL.",
+            )
+            return
+
+        self.spotify_import_worker = SpotifyImportWorker(playlist_url, self.window)
+        self.spotify_import_worker.progress.connect(
+            lambda current, total, title: print(f"[spotify] [{current}/{total}] {title}", flush=True)
+        )
+        self.spotify_import_worker.completed.connect(self._on_import_completed)
+        self.spotify_import_worker.failed.connect(self._on_import_failed)
+        self.window.sidebar.import_list_btn.setEnabled(False)
+        self.spotify_import_worker.finished.connect(
+            lambda: self.window.sidebar.import_list_btn.setEnabled(True)
+        )
+        self.spotify_import_worker.start()
+
+    def _on_import_completed(self, playlist_id, failed_count, playlist_name):
+        self.handle_open_playlist(playlist_id)
+        message = f'Imported "{playlist_name}".'
+        if failed_count:
+            message += f" {failed_count} track(s) were logged as failed."
+        QMessageBox.information(self.window, "Import List", message)
+
+    def _on_import_failed(self, reason):
+        QMessageBox.warning(self.window, "Import List", f"Import failed: {reason}")
+
 
     def handle_add_to_playlist(self):
         """Add selected song to an existing or new playlist."""
@@ -360,6 +407,9 @@ class MusicAppController:
         if self.thumbnail_backfill and self.thumbnail_backfill.isRunning():
             self.thumbnail_backfill.quit()
             self.thumbnail_backfill.wait()
+        if self.spotify_import_worker and self.spotify_import_worker.isRunning():
+            self.spotify_import_worker.quit()
+            self.spotify_import_worker.wait()
         self.player.stop()
     
     def _start_metadata_fetcher(self):

@@ -26,6 +26,7 @@ class MainWindow(QMainWindow):
     shuffle_toggled = Signal(bool)
     load_playlists = Signal()
     add_to_playlist = Signal()
+    import_list_requested = Signal()
     open_playlist_requested = Signal(int)
     volume_changed = Signal(int)
     seek_requested = Signal(float)
@@ -101,6 +102,7 @@ class MainWindow(QMainWindow):
         
         # Sidebar
         self.sidebar.add_to_playlist_clicked.connect(self.add_to_playlist.emit)
+        self.sidebar.import_list_clicked.connect(self.import_list_requested.emit)
         self.sidebar.playlists_clicked.connect(self.load_playlists.emit)
 
         QShortcut(QKeySequence(Qt.Key_MediaPlay), self).activated.connect(self.play_pause_track.emit)

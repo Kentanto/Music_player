@@ -7,6 +7,7 @@ class Sidebar(QWidget):
     
     playlists_clicked = Signal()
     add_to_playlist_clicked = Signal()
+    import_list_clicked = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,6 +26,10 @@ class Sidebar(QWidget):
         self.add_to_playlist_btn = QPushButton("➕ Add to Playlist")
         self.add_to_playlist_btn.clicked.connect(self.add_to_playlist_clicked.emit)
         layout.addWidget(self.add_to_playlist_btn)
+
+        self.import_list_btn = QPushButton("Import List")
+        self.import_list_btn.clicked.connect(self.import_list_clicked.emit)
+        layout.addWidget(self.import_list_btn)
 
         layout.addStretch()
         

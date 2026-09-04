@@ -345,6 +345,22 @@ def add_song_to_playlist(title, url, playlist_id):
     return file_path
 
 
+def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=None, thumbnail=None):
+    """Register an existing download and preserve metadata from an external catalog."""
+    song_id = save_song(title, url, artist, thumbnail)
+    if not song_id or not file_path:
+        return None
+
+    with sqlite3.connect(DB) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
+            (playlist_id, song_id, file_path),
+        )
+        conn.commit()
+    download_thumbnail(thumbnail, file_path)
+    return file_path
+
+
 def download_audio_to_folder(url, title, folder):
     from yt_dlp import YoutubeDL
     import warnings
