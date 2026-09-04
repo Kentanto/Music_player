@@ -13,6 +13,7 @@ class PlayerBar(QWidget):
     shuffle_toggled = Signal(bool)
     volume_changed = Signal(int)
     seek_requested = Signal(float)  # 0.0 to 1.0
+    fullscreen_requested = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,6 +58,10 @@ class PlayerBar(QWidget):
         self.next_btn = QPushButton("Next ⏭")
         self.next_btn.clicked.connect(self.next_clicked.emit)
         controls_layout.addWidget(self.next_btn)
+
+        self.fullscreen_btn = QPushButton("Fullscreen")
+        self.fullscreen_btn.clicked.connect(self.fullscreen_requested.emit)
+        controls_layout.addWidget(self.fullscreen_btn)
 
         self.shuffle_btn = QPushButton("🔀 Shuffle")
         self.shuffle_btn.setObjectName("shuffleButton")

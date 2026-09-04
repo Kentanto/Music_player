@@ -2,6 +2,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QShortcut, QKeySequence
 
 
@@ -11,6 +12,7 @@ from .search_panel import SearchPanel
 from .queue_panel import QueuePanel
 from .player_bar import PlayerBar
 from .cover_widget import CoverWidget
+from .fullscreen_player import FullscreenPlayer
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +32,7 @@ class MainWindow(QMainWindow):
     open_playlist_requested = Signal(int)
     volume_changed = Signal(int)
     seek_requested = Signal(float)
+    fullscreen_requested = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +81,13 @@ class MainWindow(QMainWindow):
         # ===== BOTTOM: Player controls =====
         self.player_bar = PlayerBar()
         main_layout.addWidget(self.player_bar, 0)
+
+        self.fullscreen_player = FullscreenPlayer(self)
+        self._remote_target_index = -1
+        self._remote_highlighted = None
+        self._remote_clear_timer = QTimer(self)
+        self._remote_clear_timer.setSingleShot(True)
+        self._remote_clear_timer.timeout.connect(self.clear_remote_highlight)
         
         central.setLayout(main_layout)
         self.setCentralWidget(central)
@@ -99,17 +109,92 @@ class MainWindow(QMainWindow):
         self.player_bar.shuffle_toggled.connect(self.shuffle_toggled.emit)
         self.player_bar.volume_changed.connect(self.volume_changed.emit)
         self.player_bar.seek_requested.connect(self.seek_requested.emit)
+        self.player_bar.fullscreen_requested.connect(self.fullscreen_requested.emit)
         
         # Sidebar
         self.sidebar.add_to_playlist_clicked.connect(self.add_to_playlist.emit)
         self.sidebar.import_list_clicked.connect(self.import_list_requested.emit)
         self.sidebar.playlists_clicked.connect(self.load_playlists.emit)
 
+        fullscreen_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
+        fullscreen_shortcut.setContext(Qt.ApplicationShortcut)
+        fullscreen_shortcut.activated.connect(self.fullscreen_requested.emit)
+
         QShortcut(QKeySequence(Qt.Key_MediaPlay), self).activated.connect(self.play_pause_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaPause), self).activated.connect(self.play_pause_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaNext), self).activated.connect(self.next_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.prev_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.play_pause_track.emit)
+
+    def regular_navigation_targets(self):
+        return [
+            self.search_panel.search_bar,
+            self.sidebar.playlists_btn,
+            self.sidebar.add_to_playlist_btn,
+            self.sidebar.import_list_btn,
+            self.queue_panel.list_widget,
+            self.player_bar.prev_btn,
+            self.player_bar.play_pause_btn,
+            self.player_bar.next_btn,
+            self.player_bar.shuffle_btn,
+            self.player_bar.volume_slider,
+            self.player_bar.fullscreen_btn,
+        ]
+
+    def navigate_remote(self, direction):
+        targets = (
+            self.fullscreen_player.navigation_targets()
+            if self.fullscreen_player.isVisible()
+            else self.regular_navigation_targets()
+        )
+        if not targets:
+            return
+
+        step = -1 if direction in {"left", "up"} else 1
+        if self._remote_highlighted not in targets:
+            self._remote_target_index = 0 if step > 0 else len(targets) - 1
+        else:
+            self._remote_target_index = (self._remote_target_index + step) % len(targets)
+        self._set_remote_highlight(targets[self._remote_target_index])
+
+    def activate_remote_target(self):
+        target = self._remote_highlighted
+        if target is None:
+            return
+        if target is self.queue_panel.list_widget:
+            item = target.currentItem()
+            if item:
+                item.setSelected(True)
+                self.queue_panel.item_double_clicked.emit(item)
+        elif hasattr(target, "click"):
+            target.click()
+
+    def _set_remote_highlight(self, target):
+        if self._remote_highlighted is not None:
+            self._remote_highlighted.setProperty("remoteHighlight", False)
+            self._refresh_widget_style(self._remote_highlighted)
+        self._remote_highlighted = target
+        target.setProperty("remoteHighlight", True)
+        target.setFocus(Qt.OtherFocusReason)
+        if target is self.queue_panel.list_widget and target.currentRow() < 0 and target.count():
+            target.setCurrentRow(0)
+        self._refresh_widget_style(target)
+        self._remote_clear_timer.start(2500)
+
+    def clear_remote_highlight(self):
+        if self._remote_highlighted is None:
+            return
+        self._remote_highlighted.setProperty("remoteHighlight", False)
+        self._refresh_widget_style(self._remote_highlighted)
+        self._remote_highlighted.clearFocus()
+        self._remote_highlighted = None
+        self._remote_target_index = -1
+
+    @staticmethod
+    def _refresh_widget_style(widget):
+        widget.style().unpolish(widget)
+        widget.style().polish(widget)
+        widget.update()
     
     def on_queue_item_selected(self, item):
         """Handle queue item selection"""

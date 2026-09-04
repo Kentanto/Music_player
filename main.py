@@ -24,6 +24,7 @@ from db import (
 )
 from metadata_fetcher import MetadataFetcher
 from spotify_download import SpotifyImportWorker
+from cec_remote import CecRemoteListener
 
 # Suppress all warnings
 warnings.filterwarnings("ignore")
@@ -39,6 +40,7 @@ class MusicAppController:
         self.metadata_fetcher = None  # Background thread for duration checking
         self.thumbnail_backfill = None
         self.spotify_import_worker = None
+        self.cec_remote = None
         self.active_queue_urls = []
         self.current_playlist_id = None
         
@@ -100,6 +102,23 @@ class MusicAppController:
         self.window.open_playlist_requested.connect(self.handle_open_playlist)
         self.window.volume_changed.connect(self.handle_volume_change)
         self.window.seek_requested.connect(self.handle_seek)
+        self.window.fullscreen_requested.connect(self.handle_fullscreen)
+
+        fullscreen = self.window.fullscreen_player
+        fullscreen.play_pause_clicked.connect(self.handle_play_pause)
+        fullscreen.next_clicked.connect(self.handle_next)
+        fullscreen.prev_clicked.connect(self.handle_prev)
+        fullscreen.volume_changed.connect(self.handle_volume_change)
+
+        self.cec_remote = CecRemoteListener(self.window)
+        self.cec_remote.play_pause.connect(self.handle_play_pause)
+        self.cec_remote.next_track.connect(self.handle_next)
+        self.cec_remote.previous_track.connect(self.handle_prev)
+        self.cec_remote.stop_requested.connect(self.player.stop)
+        self.cec_remote.navigation.connect(self.window.navigate_remote)
+        self.cec_remote.select_requested.connect(self.window.activate_remote_target)
+        if self.cec_remote.available():
+            self.cec_remote.start()
     
     def handle_search(self, query):
         """Search YouTube for songs"""
@@ -400,6 +419,16 @@ class MusicAppController:
         """Seek to position (0.0-1.0)"""
         self.player.seek(position)
 
+    def handle_fullscreen(self):
+        fullscreen = self.window.fullscreen_player
+        if fullscreen.isVisible():
+            fullscreen.close()
+        else:
+            fullscreen.showFullScreen()
+            fullscreen.raise_()
+            fullscreen.activateWindow()
+            self._update_now_playing()
+
     def shutdown(self):
         """Stop background work before Qt destroys the application."""
         if self.metadata_fetcher and self.metadata_fetcher.isRunning():
@@ -410,6 +439,8 @@ class MusicAppController:
         if self.spotify_import_worker and self.spotify_import_worker.isRunning():
             self.spotify_import_worker.quit()
             self.spotify_import_worker.wait()
+        if self.cec_remote and self.cec_remote.isRunning():
+            self.cec_remote.stop()
         self.player.stop()
     
     def _start_metadata_fetcher(self):
@@ -430,6 +461,8 @@ class MusicAppController:
             self.window.cover_widget.set_track_info("No track selected")
             self.window.cover_widget.clear()
             self.window.player_bar.set_track_info("No track selected")
+            self.window.fullscreen_player.set_track_info("No track selected", "")
+            self.window.fullscreen_player.set_cover_art(QPixmap())
             return
 
         title = None
@@ -467,6 +500,7 @@ class MusicAppController:
             title = current_item.split("/")[-1] if current_item else "Unknown track"
 
         self.window.cover_widget.set_track_info(title or "Unknown track", artist or "Unknown Artist")
+        self.window.fullscreen_player.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self._set_cover_art(artwork)
         self.window.player_bar.set_track_info(title or "Unknown track")
 
@@ -474,6 +508,7 @@ class MusicAppController:
         """Load local artwork or a search thumbnail into the cover panel."""
         if not artwork:
             self.window.cover_widget.clear_cover_art()
+            self.window.fullscreen_player.set_cover_art(QPixmap())
             return
 
         if isinstance(artwork, str) and Path(artwork).exists():
@@ -488,8 +523,10 @@ class MusicAppController:
 
         if pixmap.isNull():
             self.window.cover_widget.clear_cover_art()
+            self.window.fullscreen_player.set_cover_art(QPixmap())
         else:
             self.window.cover_widget.set_cover_art(pixmap)
+            self.window.fullscreen_player.set_cover_art(pixmap)
     
     def _on_video_too_long(self, url):
         """Remove a video from results if it's too long"""
