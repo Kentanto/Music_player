@@ -16,6 +16,9 @@ from db import (
     add_song_to_playlist,
     get_playlist_songs,
     remove_playlist_song,
+    rename_playlist,
+    rename_playlist_song,
+    delete_playlist,
     get_app_setting,
     set_app_setting,
     backfill_thumbnails,
@@ -100,6 +103,9 @@ class MusicAppController:
         self.window.play_track_index.connect(self.handle_play_item)
         self.window.queue_next_requested.connect(self.handle_queue_next)
         self.window.queue_panel.remove_requested.connect(self.handle_remove_song)
+        self.window.queue_panel.rename_requested.connect(self.handle_rename_item)
+        self.window.queue_panel.delete_playlist_requested.connect(self.handle_delete_playlist)
+        self.window.track_selected.connect(self.handle_track_selected)
         self.window.next_track.connect(self.handle_next)
         self.window.prev_track.connect(self.handle_prev)
         self.window.shuffle_toggled.connect(self.handle_shuffle_toggle)
@@ -205,6 +211,17 @@ class MusicAppController:
 
         self._refresh_queue_display()
         self._update_now_playing()
+
+    def handle_track_selected(self, item):
+        """Preview selected track metadata without changing playback."""
+        if not item or item.get("type") == "playlist":
+            return
+
+        title, artist, artwork = self._track_display_data(item)
+        self.window.cover_widget.set_track_info(title, artist)
+        self.window.fullscreen_player.set_track_info(title, artist)
+        self._set_cover_art(artwork)
+        self.window.player_bar.set_track_info(title)
     
     def handle_pause(self):
         self.player.pause()
@@ -472,10 +489,6 @@ class MusicAppController:
             self.window.fullscreen_player.set_cover_art(QPixmap())
             return
 
-        title = None
-        artist = None
-        artwork = None
-
         queue_sources = []
         if getattr(self.window.queue_panel, "items_data", None):
             queue_sources.extend(self.window.queue_panel.items_data)
@@ -483,33 +496,41 @@ class MusicAppController:
             queue_sources.extend(self.window.queue_panel.master_items)
         queue_sources.extend(self.current_results)
 
-        for track in queue_sources:
-            if not isinstance(track, dict):
-                continue
-            if track.get("file_path") and current_item == track.get("file_path"):
-                title = track.get("title") or track.get("file_path") or "Unknown track"
-                metadata = get_track_metadata(track["file_path"])
-                title = metadata.get("title") or title
-                artist = metadata.get("artist")
-                artwork = (
-                    thumbnail_path_for_audio(track["file_path"])
-                    if Path(thumbnail_path_for_audio(track["file_path"])).exists()
-                    else metadata.get("thumbnail")
-                )
-                break
-            if track.get("url") and current_item == track.get("url"):
-                title = track.get("title") or track.get("file_path") or "Unknown track"
-                artist = track.get("artist")
-                artwork = track.get("thumbnail")
-                break
-
-        if title is None and isinstance(current_item, str):
-            title = current_item.split("/")[-1] if current_item else "Unknown track"
+        matching_track = next(
+            (
+                track for track in queue_sources
+                if isinstance(track, dict)
+                and current_item in (track.get("file_path"), track.get("url"))
+            ),
+            None,
+        )
+        if matching_track is not None:
+            title, artist, artwork = self._track_display_data(matching_track)
+        else:
+            title = current_item.split("/")[-1] if isinstance(current_item, str) else "Unknown track"
+            artist = "Unknown Artist"
+            artwork = None
 
         self.window.cover_widget.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self.window.fullscreen_player.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self._set_cover_art(artwork)
         self.window.player_bar.set_track_info(title or "Unknown track")
+
+    def _track_display_data(self, item):
+        """Resolve title, artist, and artwork for a queue item."""
+        file_path = item.get("file_path")
+        title = item.get("title") or file_path or item.get("url") or "Unknown track"
+        artist = item.get("artist") or "Unknown Artist"
+        artwork = item.get("thumbnail")
+
+        if file_path:
+            metadata = get_track_metadata(file_path)
+            title = metadata.get("title") or title
+            artist = metadata.get("artist") or artist
+            sidecar = thumbnail_path_for_audio(file_path)
+            artwork = sidecar if Path(sidecar).exists() else (metadata.get("thumbnail") or artwork)
+
+        return title, artist, artwork
 
     def _set_cover_art(self, artwork):
         """Load local artwork or a search thumbnail into the cover panel."""
@@ -649,6 +670,94 @@ class MusicAppController:
         self.player.set_queue(remaining_urls)
         self._refresh_queue_display()
         self._update_now_playing()
+
+    def handle_rename_item(self, item):
+        """Rename a playlist or a song and refresh the current view."""
+        if not item:
+            return
+
+        old_title = item.get("title") or ""
+        label = "Playlist name:" if item.get("type") == "playlist" else "Song title:"
+        new_title, ok = QInputDialog.getText(
+            self.window,
+            "Rename Playlist" if item.get("type") == "playlist" else "Rename Song",
+            label,
+            text=old_title,
+        )
+        new_title = new_title.strip()
+        if not ok or not new_title or new_title == old_title:
+            return
+
+        try:
+            if item.get("type") == "playlist":
+                if rename_playlist(item.get("playlist_id"), new_title) is None:
+                    raise ValueError("A playlist with that name may already exist.")
+                self.handle_load_playlists()
+                return
+
+            if self.current_playlist_id is None or not item.get("file_path"):
+                return
+            old_path = item["file_path"]
+            new_path = rename_playlist_song(self.current_playlist_id, old_path, new_title)
+            if not new_path:
+                raise ValueError("The song file could not be renamed.")
+            for track in self.current_results:
+                if track.get("file_path") == old_path:
+                    track["title"] = new_title
+                    track["file_path"] = new_path
+            self.active_queue_urls = [
+                new_path if source == old_path else source
+                for source in self.active_queue_urls
+            ]
+            current_item = new_path if self.player._current_item == old_path else self.player._current_item
+            self.player.set_queue(self.active_queue_urls, current_item=current_item)
+            self._refresh_queue_display()
+            self._update_now_playing()
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self.window, "Rename", str(error))
+
+    def handle_delete_playlist(self, item):
+        """Require three confirmations before deleting a playlist."""
+        if not item or item.get("type") != "playlist":
+            return
+
+        playlist_name = item.get("title") or "this playlist"
+        prompts = [
+            f'Delete the playlist "{playlist_name}"?',
+            "Its local folder and all downloaded songs will also be removed.",
+        ]
+        for prompt in prompts:
+            if QMessageBox.question(
+                self.window,
+                "Confirm Playlist Deletion",
+                prompt,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            ) != QMessageBox.Yes:
+                return
+
+        final_box = QMessageBox(self.window)
+        final_box.setIcon(QMessageBox.Warning)
+        final_box.setWindowTitle("Final Confirmation")
+        final_box.setText(f'Final confirmation: delete "{playlist_name}"?')
+        trash_button = final_box.addButton("Move to Trash", QMessageBox.AcceptRole)
+        delete_button = final_box.addButton("Delete Permanently", QMessageBox.DestructiveRole)
+        final_box.addButton("Cancel", QMessageBox.RejectRole)
+        final_box.exec()
+        clicked = final_box.clickedButton()
+        if clicked not in (trash_button, delete_button):
+            return
+
+        use_trash = clicked is trash_button
+        if not delete_playlist(item.get("playlist_id"), use_trash=use_trash):
+            QMessageBox.warning(self.window, "Delete Playlist", "The playlist could not be deleted.")
+            return
+
+        if self.current_playlist_id == item.get("playlist_id"):
+            self.current_playlist_id = None
+            self.active_queue_urls = []
+            self.player.set_queue([])
+        self.handle_load_playlists()
 
 
 

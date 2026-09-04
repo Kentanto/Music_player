@@ -34,6 +34,7 @@ class MainWindow(QMainWindow):
     volume_changed = Signal(int)
     seek_requested = Signal(float)
     fullscreen_requested = Signal()
+    track_selected = Signal(object)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -203,7 +204,7 @@ class MainWindow(QMainWindow):
     
     def on_queue_item_selected(self, item):
         """Handle queue item selection"""
-        self.cover_widget.set_track_info(item.get("title", "Unknown"))
+        self.track_selected.emit(item)
 
     def on_queue_item_double_clicked(self, item):
         if item.get("type") == "playlist":

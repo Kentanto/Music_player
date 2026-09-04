@@ -12,6 +12,8 @@ class QueuePanel(QWidget):
     item_double_clicked = Signal(object)  # Emitted when user double-clicks an item
     queue_next_requested = Signal(object)  # Emitted when user wants to queue a track next
     remove_requested = Signal(object)  # Emitted when a playlist track should be removed
+    rename_requested = Signal(object)  # Emitted when a playlist or track should be renamed
+    delete_playlist_requested = Signal(object)  # Emitted when a playlist should be deleted
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +67,10 @@ class QueuePanel(QWidget):
         self._refresh_display()
 
     def _refresh_display(self):
+        scroll_bar = self.list_widget.verticalScrollBar()
+        previous_scroll_value = scroll_bar.value()
+        was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
+
         filter_text = self.filter_input.text().strip().casefold()
         sort_text = self.sort_combo.currentText()
 
@@ -102,33 +108,47 @@ class QueuePanel(QWidget):
         if self.preserve_order:
             items = list(items)
 
+        if items == self.items_data and self.list_widget.count() == len(items):
+            self.items_data = items
+            for index, item in enumerate(items):
+                self._update_list_item(self.list_widget.item(index), item)
+            return
+
         self.items_data = items
         self.list_widget.clear()
 
         for item in items:
-            title = item.get("title", "Unknown")
-            duration = item.get("duration")
-            item_type = item.get("type")
-            
-            if item_type == "playlist":
-                count = item.get("count", 0)
-                display_text = f"{title} ({count} songs)"
-            elif duration is not None:
-                mins = duration // 60
-                secs = duration % 60
-                display_text = f"{title} ({mins}:{secs:02d})"
-            else:
-                display_text = title
-            
-            list_item = QListWidgetItem(display_text)
-            source = item.get("file_path") or item.get("url")
-            if self._matches_current_source(item):
-                list_item.setBackground(QColor("#000000"))
-                list_item.setForeground(QColor("#1db954"))
-                font = list_item.font()
-                font.setBold(True)
-                list_item.setFont(font)
+            list_item = QListWidgetItem()
+            self._update_list_item(list_item, item)
             self.list_widget.addItem(list_item)
+
+        if was_at_bottom:
+            scroll_bar.setValue(scroll_bar.maximum())
+        else:
+            scroll_bar.setValue(min(previous_scroll_value, scroll_bar.maximum()))
+
+    def _update_list_item(self, list_item, item):
+        title = item.get("title", "Unknown")
+        duration = item.get("duration")
+        item_type = item.get("type")
+
+        if item_type == "playlist":
+            display_text = f"{title} ({item.get('count', 0)} songs)"
+        elif duration is not None:
+            display_text = f"{title} ({duration // 60}:{duration % 60:02d})"
+        else:
+            display_text = title
+
+        list_item.setText(display_text)
+        font = list_item.font()
+        font.setBold(self._matches_current_source(item))
+        list_item.setFont(font)
+        if self._matches_current_source(item):
+            list_item.setBackground(QColor("#000000"))
+            list_item.setForeground(QColor("#1db954"))
+        else:
+            list_item.setData(Qt.BackgroundRole, None)
+            list_item.setData(Qt.ForegroundRole, None)
     
     def _matches_current_source(self, item):
         current_source = self.current_item_source
@@ -200,10 +220,18 @@ class QueuePanel(QWidget):
         menu = QMenu(self.list_widget)
         queue_next_action = menu.addAction("Queue Next")
         remove_action = None
+        rename_action = menu.addAction("Rename Playlist" if data.get("type") == "playlist" else "Rename Song")
+        delete_playlist_action = None
+        if data.get("type") == "playlist":
+            delete_playlist_action = menu.addAction("Delete Playlist")
         if data.get("type") == "track" and data.get("file_path"):
             remove_action = menu.addAction("Remove and Delete File")
         action = menu.exec_(self.list_widget.mapToGlobal(point))
         if action == queue_next_action:
             self.queue_next_requested.emit(data)
+        elif action == rename_action:
+            self.rename_requested.emit(data)
+        elif action == delete_playlist_action:
+            self.delete_playlist_requested.emit(data)
         elif action == remove_action:
             self.remove_requested.emit(data)

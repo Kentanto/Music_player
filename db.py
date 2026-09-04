@@ -4,6 +4,8 @@ import sys
 import sqlite3
 import urllib.request
 import shutil
+import urllib.parse
+import uuid
 from pathlib import Path
 
 def resource_path(relative_path):
@@ -84,71 +86,73 @@ def download_thumbnail(thumbnail_url, file_path):
 
 
 def init_db():
-    with sqlite3.connect(DB) as conn:
-        c = conn.cursor()
+    conn = sqlite3.connect(DB)
+    c = conn.cursor()
 
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS songs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT,
-            url TEXT UNIQUE,
-            artist TEXT,
-            thumbnail TEXT
-        )
-        """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS songs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT,
+        url TEXT UNIQUE,
+        artist TEXT,
+        thumbnail TEXT
+    )
+    """)
 
-        columns = {row[1] for row in c.execute("PRAGMA table_info(songs)")}
-        if "artist" not in columns:
-            c.execute("ALTER TABLE songs ADD COLUMN artist TEXT")
-        if "thumbnail" not in columns:
-            c.execute("ALTER TABLE songs ADD COLUMN thumbnail TEXT")
+    columns = {row[1] for row in c.execute("PRAGMA table_info(songs)")}
+    if "artist" not in columns:
+        c.execute("ALTER TABLE songs ADD COLUMN artist TEXT")
+    if "thumbnail" not in columns:
+        c.execute("ALTER TABLE songs ADD COLUMN thumbnail TEXT")
 
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS stream_cache (
-            url TEXT PRIMARY KEY,
-            stream_url TEXT
-        )
-        """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS stream_cache (
+        url TEXT PRIMARY KEY,
+        stream_url TEXT
+    )
+    """)
 
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS playlists (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            folder TEXT UNIQUE
-        )
-        """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS playlists (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE,
+        folder TEXT UNIQUE
+    )
+    """)
 
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS playlist_songs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            playlist_id INTEGER,
-            song_id INTEGER,
-            file_path TEXT UNIQUE,
-            FOREIGN KEY (playlist_id) REFERENCES playlists(id),
-            FOREIGN KEY (song_id) REFERENCES songs(id),
-            UNIQUE (playlist_id, song_id)
-        )
-        """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS playlist_songs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        playlist_id INTEGER,
+        song_id INTEGER,
+        file_path TEXT UNIQUE,
+        FOREIGN KEY (playlist_id) REFERENCES playlists(id),
+        FOREIGN KEY (song_id) REFERENCES songs(id),
+        UNIQUE (playlist_id, song_id)
+    )
+    """)
 
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-        """)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    )
+    """)
 
-        # Register any existing playlist folders on disk.
-        for folder in sorted(PLAYLISTS_DIR.iterdir()):
-            if folder.is_dir():
-                c.execute(
-                    "INSERT OR IGNORE INTO playlists (name, folder) VALUES (?, ?)",
-                    (folder.name, str(folder))
-                )
-        conn.commit()
+    # Register any existing playlist folders on disk.
+    for folder in sorted(PLAYLISTS_DIR.iterdir()):
+        if folder.is_dir():
+            c.execute(
+                "INSERT OR IGNORE INTO playlists (name, folder) VALUES (?, ?)",
+                (folder.name, str(folder))
+            )
+    conn.commit()
+    conn.close()
 
 
 def save_song(title, url, artist=None, thumbnail=None):
-    with sqlite3.connect(DB) as conn:
+    conn = sqlite3.connect(DB)
+    try:
         c = conn.cursor()
         c.execute(
             "INSERT INTO songs (title, url, artist, thumbnail) VALUES (?, ?, ?, ?) "
@@ -161,6 +165,8 @@ def save_song(title, url, artist=None, thumbnail=None):
         c.execute("SELECT id FROM songs WHERE url=?", (url,))
         row = c.fetchone()
         return row[0] if row else None
+    finally:
+        conn.close()
 
 
 def get_songs():
@@ -178,7 +184,8 @@ def create_playlist(name):
     folder = PLAYLISTS_DIR / _sanitize_filename(name)
     folder.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(DB) as conn:
+    conn = sqlite3.connect(DB)
+    try:
         c = conn.cursor()
         c.execute(
             "INSERT OR IGNORE INTO playlists (name, folder) VALUES (?, ?)",
@@ -187,6 +194,8 @@ def create_playlist(name):
         conn.commit()
         c.execute("SELECT id, name, folder FROM playlists WHERE name=?", (name,))
         return c.fetchone()
+    finally:
+        conn.close()
 
 
 def get_playlists():
@@ -212,10 +221,134 @@ def get_playlists():
 
 
 def get_playlist_by_id(playlist_id):
-    with sqlite3.connect(DB) as conn:
+    conn = sqlite3.connect(DB)
+    try:
         c = conn.cursor()
         c.execute("SELECT id, name, folder FROM playlists WHERE id=?", (playlist_id,))
         return c.fetchone()
+    finally:
+        conn.close()
+
+
+def rename_playlist(playlist_id, new_name):
+    """Rename a playlist folder and keep its database paths in sync."""
+    new_name = str(new_name).strip()
+    if not new_name:
+        return None
+
+    playlist = get_playlist_by_id(playlist_id)
+    if not playlist:
+        return None
+
+    _, _, old_folder = playlist
+    old_path = Path(old_folder)
+    new_path = PLAYLISTS_DIR / _sanitize_filename(new_name)
+    if old_path != new_path and new_path.exists():
+        return None
+
+    if old_path != new_path and old_path.exists():
+        old_path.rename(new_path)
+
+    try:
+        conn = sqlite3.connect(DB)
+        try:
+            conn.execute(
+                "UPDATE playlists SET name=?, folder=? WHERE id=?",
+                (new_name, str(new_path), playlist_id),
+            )
+            conn.execute(
+                "UPDATE playlist_songs SET file_path=REPLACE(file_path, ?, ?) "
+                "WHERE playlist_id=?",
+                (str(old_path), str(new_path), playlist_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        if old_path != new_path and new_path.exists() and not old_path.exists():
+            new_path.rename(old_path)
+        raise
+
+    return get_playlist_by_id(playlist_id)
+
+
+def _move_to_trash(path):
+    """Move a file or directory to the native trash on Windows/Linux."""
+    path = Path(path)
+    if not path.exists():
+        return True
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class SHFILEOPSTRUCT(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("wFunc", wintypes.UINT),
+                ("pFrom", wintypes.LPCWSTR),
+                ("pTo", wintypes.LPCWSTR),
+                ("fFlags", wintypes.USHORT),
+                ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", wintypes.LPVOID),
+                ("lpszProgressTitle", wintypes.LPCWSTR),
+            ]
+
+        operation = SHFILEOPSTRUCT()
+        operation.wFunc = 3  # FO_DELETE
+        operation.pFrom = str(path) + "\0"
+        operation.fFlags = 0x0040 | 0x0010  # FOF_ALLOWUNDO | FOF_NOCONFIRMATION
+        return ctypes.windll.shell32.SHFileOperationW(ctypes.byref(operation)) == 0
+
+    trash_root = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "Trash"
+    trash_files = trash_root / "files"
+    trash_info = trash_root / "info"
+    trash_files.mkdir(parents=True, exist_ok=True)
+    trash_info.mkdir(parents=True, exist_ok=True)
+    trash_name = f"{path.name}-{uuid.uuid4().hex}"
+    destination = trash_files / trash_name
+    path.rename(destination)
+    deletion_date = __import__("datetime").datetime.now().astimezone().strftime("%Y-%m-%dT%H:%M:%S")
+    escaped_path = urllib.parse.quote(str(path), safe="/")
+    (trash_info / f"{trash_name}.trashinfo").write_text(
+        "[Trash Info]\n" f"Path={escaped_path}\n" f"DeletionDate={deletion_date}\n",
+        encoding="utf-8",
+    )
+    return True
+
+
+def delete_playlist(playlist_id, use_trash=True):
+    """Delete a playlist, its local folder, and database relationships."""
+    playlist = get_playlist_by_id(playlist_id)
+    if not playlist:
+        return False
+
+    _, _, folder = playlist
+    folder_path = Path(folder)
+    if folder_path.exists():
+        if use_trash:
+            if not _move_to_trash(folder_path):
+                return False
+        else:
+            shutil.rmtree(folder_path)
+
+    conn = sqlite3.connect(DB)
+    try:
+        song_ids = [row[0] for row in conn.execute(
+            "SELECT song_id FROM playlist_songs WHERE playlist_id=?", (playlist_id,)
+        )]
+        conn.execute("DELETE FROM playlist_songs WHERE playlist_id=?", (playlist_id,))
+        conn.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
+        for song_id in song_ids:
+            conn.execute(
+                "DELETE FROM songs WHERE id=? AND NOT EXISTS "
+                "(SELECT 1 FROM playlist_songs WHERE song_id=?)",
+                (song_id, song_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return True
 
 
 def _scan_playlist_folder(folder):
@@ -257,7 +390,8 @@ def get_playlist_songs(playlist_id):
     _, _, folder = playlist
     folder_songs = _scan_playlist_folder(folder)
 
-    with sqlite3.connect(DB) as conn:
+    conn = sqlite3.connect(DB)
+    try:
         c = conn.cursor()
         c.execute(
             "SELECT s.title, s.url, ps.file_path "
@@ -268,6 +402,8 @@ def get_playlist_songs(playlist_id):
             (playlist_id,)
         )
         db_songs = c.fetchall()
+    finally:
+        conn.close()
 
     if not db_songs:
         return folder_songs
@@ -314,6 +450,54 @@ def remove_playlist_song(playlist_id, file_path, delete_file=True):
     return True
 
 
+def rename_playlist_song(playlist_id, file_path, new_title):
+    """Rename a local song and update its title and path in the database."""
+    new_title = str(new_title).strip()
+    if not file_path or not new_title:
+        return None
+
+    source = Path(file_path)
+    conn = sqlite3.connect(DB)
+    try:
+        row = conn.execute(
+            "SELECT song_id FROM playlist_songs WHERE playlist_id=? AND file_path=?",
+            (playlist_id, str(file_path)),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not source.exists():
+        return None
+
+    target = source.with_name(f"{_sanitize_filename(new_title)}{source.suffix}")
+    if target != source and target.exists():
+        return None
+    sidecar = Path(thumbnail_path_for_audio(source))
+    target_sidecar = Path(thumbnail_path_for_audio(target))
+
+    if target != source:
+        source.rename(target)
+        if sidecar.exists():
+            sidecar.rename(target_sidecar)
+    try:
+        conn = sqlite3.connect(DB)
+        try:
+            conn.execute("UPDATE songs SET title=? WHERE id=?", (new_title, row[0]))
+            conn.execute(
+                "UPDATE playlist_songs SET file_path=? WHERE playlist_id=? AND file_path=?",
+                (str(target), playlist_id, str(source)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        if target != source and target.exists():
+            target.rename(source)
+            if target_sidecar.exists():
+                target_sidecar.rename(sidecar)
+        raise
+    return str(target)
+
+
 def add_song_to_playlist(title, url, playlist_id):
     song_id = save_song(title, url)
     if not song_id:
@@ -351,12 +535,15 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
     if not song_id or not file_path:
         return None
 
-    with sqlite3.connect(DB) as conn:
+    conn = sqlite3.connect(DB)
+    try:
         conn.execute(
             "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
             (playlist_id, song_id, file_path),
         )
         conn.commit()
+    finally:
+        conn.close()
     download_thumbnail(thumbnail, file_path)
     return file_path
 
