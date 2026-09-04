@@ -11,10 +11,31 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QApplication,
 )
-from PySide6.QtCore import QEvent, QPropertyAnimation, QTimer, Qt, Signal
-from PySide6.QtGui import QPixmap, QKeyEvent
+from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QTimer, QRect, Qt, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap, QRegion
 
 from .eq_visualizer import EQVisualizer
+
+
+class EQProgressBadge(QWidget):
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#1ed760"))
+        painter.drawEllipse(self.rect().adjusted(1, 1, -1, -1))
+
+
+class FullscreenInfoPanel(QWidget):
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0.0, Qt.transparent)
+        gradient.setColorAt(0.28, QColor(30, 30, 30, 155))
+        gradient.setColorAt(0.58, QColor(30, 30, 30, 235))
+        gradient.setColorAt(1.0, QColor(30, 30, 30, 255))
+        painter.fillRect(self.rect(), gradient)
+        super().paintEvent(event)
 
 
 class FullscreenPlayer(QWidget):
@@ -46,7 +67,7 @@ class FullscreenPlayer(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
@@ -54,13 +75,15 @@ class FullscreenPlayer(QWidget):
         self.cover_label.setAlignment(Qt.AlignCenter)
         self.cover_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.cover_label.setObjectName("fullscreenArtwork")
-        layout.addWidget(self.cover_label, 1)
+        layout.addWidget(self.cover_label, 0, 0)
 
-        info_panel = QWidget()
+        info_panel = FullscreenInfoPanel()
         info_panel.setObjectName("fullscreenInfoPanel")
+        info_panel.setMinimumHeight(300)
+        info_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         info_layout = QVBoxLayout(info_panel)
-        info_layout.setContentsMargins(28, 20, 28, 22)
-        info_layout.setSpacing(8)
+        info_layout.setContentsMargins(28, 42, 28, 22)
+        info_layout.setSpacing(10)
 
         metadata_panel = QWidget()
         metadata_layout = QVBoxLayout(metadata_panel)
@@ -80,25 +103,30 @@ class FullscreenPlayer(QWidget):
 
         info_layout.addWidget(metadata_panel)
 
-        seek_row = QHBoxLayout()
-        self.current_time_label = QLabel("0:00")
-        self.total_time_label = QLabel("0:00")
-        self.current_time_label.setObjectName("fullscreenTime")
-        self.total_time_label.setObjectName("fullscreenTime")
         self.seek_slider = QSlider(Qt.Horizontal)
         self.seek_slider.setRange(0, 100)
         self.seek_slider.setObjectName("fullscreenSeek")
         self.seek_slider.sliderMoved.connect(
             lambda value: self.seek_requested.emit(value / 100.0)
         )
-        seek_row.addWidget(self.current_time_label)
-        seek_row.addWidget(self.seek_slider, 1)
-        seek_row.addWidget(self.total_time_label)
-        info_layout.addLayout(seek_row)
 
         normal_controls = QWidget()
         controls = QGridLayout(normal_controls)
         controls.setContentsMargins(0, 2, 0, 0)
+
+        normal_timestamp_row = QWidget()
+        normal_timestamp_row.setObjectName("fullscreenNormalTimestampRow")
+        timestamp_layout = QHBoxLayout(normal_timestamp_row)
+        timestamp_layout.setContentsMargins(12, 0, 12, 0)
+        timestamp_layout.setSpacing(8)
+        self.normal_current_time_label = QLabel("0:00")
+        self.normal_total_time_label = QLabel("0:00")
+        self.normal_current_time_label.setObjectName("fullscreenNormalTime")
+        self.normal_total_time_label.setObjectName("fullscreenNormalTime")
+        timestamp_layout.addWidget(self.normal_current_time_label, 0, Qt.AlignVCenter)
+        timestamp_layout.addWidget(self.seek_slider, 1, Qt.AlignVCenter)
+        timestamp_layout.addWidget(self.normal_total_time_label, 0, Qt.AlignVCenter)
+        controls.addWidget(normal_timestamp_row, 1, 0)
 
         transport_controls = QHBoxLayout()
         transport_controls.setSpacing(8)
@@ -139,18 +167,46 @@ class FullscreenPlayer(QWidget):
         controls.addLayout(transport_controls, 0, 0, Qt.AlignCenter)
         self.eq_visualizer = EQVisualizer()
         self.eq_visualizer.setMinimumWidth(0)
-        self.eq_visualizer.setFixedHeight(82)
+        self.eq_visualizer.setFixedHeight(165)
         self.eq_visualizer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.eq_visualizer.set_show_progress(True)
+        self.eq_visualizer.progress_clicked.connect(self.seek_requested.emit)
+
+        eq_progress_overlay = QWidget()
+        eq_progress_overlay.setObjectName("fullscreenEQOverlay")
+        eq_progress_overlay.setMinimumHeight(165)
+        eq_progress_layout = QGridLayout(eq_progress_overlay)
+        eq_progress_layout.setContentsMargins(0, 0, 0, 0)
+        eq_progress_layout.setSpacing(0)
+        eq_progress_layout.addWidget(self.eq_visualizer, 0, 0)
+
+        self.eq_seek_slider = QSlider(Qt.Horizontal)
+        self.eq_seek_slider.setRange(0, 100)
+        self.eq_seek_slider.setObjectName("fullscreenEQSeek")
+        self.eq_seek_slider.sliderMoved.connect(
+            lambda value: self.seek_requested.emit(value / 100.0)
+        )
+        self.eq_seek_slider.setParent(eq_progress_overlay)
+        self.eq_seek_slider.setFixedHeight(15)
+        self.eq_seek_slider.show()
+
+        self.eq_progress_badge = EQProgressBadge(eq_progress_overlay)
+        self.eq_progress_badge.setObjectName("fullscreenEQProgressBadge")
+        self.eq_progress_badge.setFixedSize(18, 18)
+        self.eq_progress_badge.setMask(QRegion(self.eq_progress_badge.rect(), QRegion.Ellipse))
+        self.eq_progress_badge.raise_()
+        self._seek_position = 0.0
+        self._eq_progress_overlay = eq_progress_overlay
 
         controls_container = QWidget()
         controls_stack = QStackedLayout(controls_container)
         controls_stack.setStackingMode(QStackedLayout.StackingMode.StackOne)
         controls_stack.addWidget(normal_controls)
-        controls_stack.addWidget(self.eq_visualizer)
+        controls_stack.addWidget(eq_progress_overlay)
         info_layout.addWidget(controls_container)
         self._controls_container = controls_container
         self._controls_stack = controls_stack
-        layout.addWidget(info_panel, 0)
+        layout.addWidget(info_panel, 0, 0, Qt.AlignBottom)
 
     def set_track_info(self, title, artist="Unknown Artist"):
         self.title_label.setText(title or "No track selected")
@@ -171,13 +227,21 @@ class FullscreenPlayer(QWidget):
         self.volume_slider.blockSignals(False)
 
     def set_time(self, current, total):
-        self.current_time_label.setText(self._format_time(current))
-        self.total_time_label.setText(self._format_time(total))
+        current_text = self._format_time(current)
+        total_text = self._format_time(total)
+        self.normal_current_time_label.setText(current_text)
+        self.normal_total_time_label.setText(total_text)
 
     def set_seek_position(self, position):
+        self._seek_position = max(0.0, min(float(position), 1.0))
         self.seek_slider.blockSignals(True)
-        self.seek_slider.setValue(int(max(0.0, min(position, 1.0)) * 100))
+        self.seek_slider.setValue(int(self._seek_position * 100))
         self.seek_slider.blockSignals(False)
+        self.eq_seek_slider.blockSignals(True)
+        self.eq_seek_slider.setValue(int(self._seek_position * 100))
+        self.eq_seek_slider.blockSignals(False)
+        self.eq_visualizer.set_progress(self._seek_position)
+        self._position_time_badge()
 
     @staticmethod
     def _format_time(seconds):
@@ -191,11 +255,53 @@ class FullscreenPlayer(QWidget):
             self.play_pause_button,
             self.next_button,
             self.seek_slider,
+            self.eq_seek_slider,
         ]
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_cover_art()
+        self._position_eq_seekbar()
+        self._position_time_badge()
+
+    def _position_eq_seekbar(self):
+        if not hasattr(self, "_eq_progress_overlay"):
+            return
+        visualizer_position = self.eq_visualizer.mapTo(
+            self._eq_progress_overlay, QPoint(0, 0)
+        )
+        baseline = self.eq_visualizer.height() - 23
+        left = visualizer_position.x() + 12
+        width = max(1, self.eq_visualizer.width() - 24)
+        self.eq_seek_slider.setGeometry(
+            left,
+            max(0, visualizer_position.y() + baseline - self.eq_seek_slider.height() // 2),
+            width,
+            self.eq_seek_slider.height(),
+        )
+        self.eq_seek_slider.raise_()
+
+    def _position_time_badge(self):
+        if not hasattr(self, "_eq_progress_overlay"):
+            return
+        self._position_eq_seekbar()
+        badge = self.eq_progress_badge
+        progress_left = 12
+        progress_right = max(progress_left, self.eq_visualizer.width() - 12)
+        center_x = progress_left + (progress_right - progress_left) * self._seek_position
+        visualizer_position = self.eq_visualizer.mapTo(self._eq_progress_overlay, QPoint(0, 0))
+        badge.move(
+            int(visualizer_position.x() + center_x - badge.width() / 2),
+            max(
+                0,
+                visualizer_position.y()
+                + self.eq_visualizer.height()
+                - 23
+                - badge.height() // 2
+                + 1,
+            ),
+        )
+        badge.raise_()
 
     def keyPressEvent(self, event: QKeyEvent):
         self._register_activity()
@@ -241,7 +347,7 @@ class FullscreenPlayer(QWidget):
         if self._idle_mode == idle:
             return
         self._idle_mode = idle
-        target = self.eq_visualizer if idle else self._controls_stack.widget(0)
+        target = self._eq_progress_overlay if idle else self._controls_stack.widget(0)
         self._controls_stack.setCurrentWidget(target)
 
         effect = QGraphicsOpacityEffect(target)
@@ -268,8 +374,10 @@ class FullscreenPlayer(QWidget):
             return
 
         scaled = self._cover_pixmap.scaled(
-            width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            width, height, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
         )
+        x_offset = max(0, (scaled.width() - width) // 2)
+        y_offset = max(0, (scaled.height() - height) // 2)
         self.cover_label.setText("")
-        self.cover_label.setPixmap(scaled)
+        self.cover_label.setPixmap(scaled.copy(x_offset, y_offset, width, height))
         self._last_cover_size = target_size

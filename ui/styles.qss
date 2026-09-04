@@ -139,24 +139,42 @@ QScrollBar::handle:vertical:hover {
 
 /* Fullscreen player */
 QWidget#fullscreenInfoPanel {
-    background-color: #1e1e1e;
-    border-top: 1px solid #303030;
+    background-color: transparent;
+    border: none;
+}
+
+QWidget#fullscreenEQOverlay,
+QWidget#fullscreenTimestampRow,
+QWidget#fullscreenInfoPanel QWidget {
+    background-color: transparent;
 }
 
 QLabel#fullscreenTitle {
     color: #ffffff;
-    background-color: #1e1e1e;
+    background-color: transparent;
     font-size: 24px;
     font-weight: bold;
 }
 
 QLabel#fullscreenArtist {
     color: #a7a7a7;
-    background-color: #1e1e1e;
+    background-color: transparent;
 }
 
-QLabel#fullscreenTime, QLabel#fullscreenVolumeLabel {
+QLabel#fullscreenVolumeLabel {
     color: #a7a7a7;
+}
+
+QLabel#fullscreenNormalTime {
+    background-color: #169c46;
+    color: #d0d0d0;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+QWidget#fullscreenEQProgressBadge {
+    background-color: #169c46;
+    border: none;
 }
 
 QPushButton#fullscreenControl, QPushButton#fullscreenPlayControl {
@@ -216,8 +234,44 @@ QWidget#fullscreenVolumeControl {
     border-radius: 16px;
 }
 
-QSlider#fullscreenSeek {
+QSlider#fullscreenSeek, QSlider#fullscreenEQSeek {
     min-width: 260px;
+    background-color: transparent;
+}
+
+QSlider#fullscreenSeek::groove:horizontal,
+QSlider#fullscreenEQSeek::groove:horizontal {
+    background-color: #505050;
+    height: 6px;
+    border-radius: 3px;
+}
+
+QSlider#fullscreenEQSeek::groove:horizontal {
+    background-color: transparent;
+    height: 2px;
+}
+
+QSlider#fullscreenSeek::sub-page:horizontal {
+    background-color: #1db954;
+    border-radius: 3px;
+}
+
+QSlider#fullscreenSeek::handle:horizontal {
+    background-color: #1db954;
+    border: 1px solid #1ed760;
+    width: 14px;
+    height: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
+}
+
+QSlider#fullscreenEQSeek::sub-page:horizontal,
+QSlider#fullscreenEQSeek::handle:horizontal {
+    background-color: transparent;
+    border: none;
+    width: 1px;
+    height: 1px;
+    margin: 0;
 }
 
 QSlider#fullscreenVolume {

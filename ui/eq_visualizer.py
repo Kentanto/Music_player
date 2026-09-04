@@ -1,7 +1,7 @@
 import math
 import struct
 
-from PySide6.QtCore import QSize, Qt, QTimer, Slot
+from PySide6.QtCore import QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtMultimedia import QAudioFormat
 from PySide6.QtWidgets import QSizePolicy, QWidget
@@ -12,6 +12,7 @@ class EQVisualizer(QWidget):
 
     BAND_COUNT = 96
     FFT_SIZE = 2048
+    progress_clicked = Signal(float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -23,12 +24,38 @@ class EQVisualizer(QWidget):
         self._levels = [0.0] * self.BAND_COUNT
         self._targets = [0.0] * self.BAND_COUNT
         self._peak_level = 1.0
+        self._progress = 0.0
+        self._show_progress = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._animate)
         self._timer.start(33)
 
     def sizeHint(self):
         return QSize(720, 52)
+
+    def set_show_progress(self, enabled):
+        self._show_progress = bool(enabled)
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            not self._show_progress,
+        )
+        self.update()
+
+    def set_progress(self, position):
+        self._progress = max(0.0, min(1.0, float(position)))
+        self.update()
+
+    def mousePressEvent(self, event):
+        if self._show_progress and event.button() == Qt.MouseButton.LeftButton:
+            self.progress_clicked.emit(self._progress_from_x(event.position().x()))
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def _progress_from_x(self, x):
+        left = 16
+        right = max(left + 1, self.width() - 16)
+        return max(0.0, min(1.0, (x - left) / (right - left)))
 
     @Slot(object)
     def update_buffer(self, buffer):
@@ -150,7 +177,7 @@ class EQVisualizer(QWidget):
         left = 12
         right = self.width() - 12
         top = 6
-        baseline = self.height() - 7
+        baseline = self.height() - (23 if self._show_progress else 7)
         available_height = max(1, baseline - top)
         width = max(2, (right - left) / self.BAND_COUNT - 3)
 
@@ -160,7 +187,7 @@ class EQVisualizer(QWidget):
         gradient.setColorAt(1.0, QColor("#58d878"))
         painter.setBrush(gradient)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setOpacity(0.9)
+        painter.setOpacity(1.0)
         for index, level in enumerate(self._levels):
             x = left + index * (right - left) / self.BAND_COUNT + 1
             height = max(2, int(available_height * level))
@@ -168,4 +195,5 @@ class EQVisualizer(QWidget):
 
         painter.setOpacity(1.0)
         painter.drawLine(left, baseline, right, baseline)
+
 
