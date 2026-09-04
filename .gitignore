@@ -1,0 +1,8 @@
+__pycache__
+.venv
+.vscode
+ffmpeg/
+playlists/
+ui/__pycache__
+music.db
+randomize_pictures.py
