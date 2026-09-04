@@ -1,7 +1,7 @@
 from yt_dlp import YoutubeDL
 import warnings
-from db import resource_path
-FFMPEG_LOCATION = resource_path("ffmpeg/bin")
+from db import get_ffmpeg_location
+FFMPEG_LOCATION = get_ffmpeg_location()
 
 # Suppress yt-dlp warnings
 warnings.filterwarnings("ignore")
@@ -18,19 +18,18 @@ def search_youtube(query, limit=10, max_duration=600):
         max_duration: Not used in search, kept for compatibility
     
     Returns:
-        List of dicts with 'title', 'url', and 'thumbnail'
+    List of dicts with 'title', 'url', and 'thumbnail'
     """
     if not query:
         return []
 
     print(f"[search] Searching YouTube for: {query!r}", flush=True)
-
     ydl_opts = {
         "quiet": True,
         "noplaylist": True,
         "extract_flat": True,  # Fast: don't fetch full details
         "no_warnings": True,
-        "ffmpeg_location": FFMPEG_LOCATION,
+        **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
     }
 
     # Use ytsearch{N}: to request multiple results from yt-dlp

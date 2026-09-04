@@ -1,8 +1,11 @@
-__pycache__
+playlists/
 .venv
 .vscode
-ffmpeg/
-playlists/
-ui/__pycache__
+.cache
 music.db
 randomize_pictures.py
+build/
+dist/
+ffmpeg/
+__pycache__/
+ui/__pycache__

@@ -17,13 +17,12 @@ VK_MEDIA_NEXT_TRACK = getattr(win32con, "VK_MEDIA_NEXT_TRACK", 0xB0)
 VK_MEDIA_PREV_TRACK = getattr(win32con, "VK_MEDIA_PREV_TRACK", 0xB1)
 WM_HOTKEY = getattr(win32con, "WM_HOTKEY", 0x0312)
 
-USER32 = ctypes.windll.user32
-USER32.RegisterHotKey.argtypes = [wintypes.HWND, wintypes.INT, wintypes.UINT, wintypes.UINT]
-USER32.RegisterHotKey.restype = wintypes.BOOL
-USER32.UnregisterHotKey.argtypes = [wintypes.HWND, wintypes.INT]
-USER32.UnregisterHotKey.restype = wintypes.BOOL
-
-
+if HAS_WINDOWS_HOTKEYS:
+    USER32 = ctypes.windll.user32
+    USER32.RegisterHotKey.argtypes = [wintypes.HWND, wintypes.INT, wintypes.UINT, wintypes.UINT]
+    USER32.RegisterHotKey.restype = wintypes.BOOL
+    USER32.UnregisterHotKey.argtypes = [wintypes.HWND, wintypes.INT]
+    USER32.UnregisterHotKey.restype = wintypes.BOOL
 class MediaHotkeyFilter(QAbstractNativeEventFilter):
     """Native Windows hotkey filter for media keys."""
 

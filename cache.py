@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import warnings
 from pathlib import Path
@@ -6,7 +7,16 @@ from yt_dlp import YoutubeDL
 from db import get_cached_stream, cache_stream, resource_path
 
 
-FFMPEG_LOCATION = resource_path("ffmpeg/bin")
+def get_ffmpeg_location():
+    bundled = resource_path("ffmpeg/bin")
+    if os.name == "nt" and (bundled / "ffmpeg.exe").exists():
+        return str(bundled)
+    if shutil.which("ffmpeg"):
+        return shutil.which("ffmpeg")
+    return str(bundled) if bundled.exists() else None
+
+
+FFMPEG_LOCATION = get_ffmpeg_location()
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -33,7 +43,7 @@ def resolve_stream(url, max_duration=600):
         "retries": 3,
         "fragment_retries": 3,
         "js_runtimes": {"node": {}},
-        "ffmpeg_location": FFMPEG_LOCATION,
+        **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
         "outtmpl": str(CACHE_DIR / "%(id)s.%(ext)s"),
         "postprocessors": [
             {

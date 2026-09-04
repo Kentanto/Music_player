@@ -52,7 +52,6 @@ class CoverWidget(QWidget):
         if pixmap:
             scaled = pixmap.scaledToWidth(200, Qt.SmoothTransformation)
             self.cover_label.setPixmap(scaled)
-
     def clear_cover_art(self):
         """Restore the cover art placeholder."""
         self.cover_label.setPixmap(QPixmap())

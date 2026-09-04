@@ -31,6 +31,7 @@ class Player:
         self._ordered_queue = []
         self._current_item = None
         self._shuffle_order = []
+        self._priority_queue = []
         self._end_signal_pending = False
 
         # start at a safe default volume and use a smooth curve for perception
@@ -90,18 +91,35 @@ class Player:
             self._current_item = self._base_queue[0] if self._base_queue else None
 
         if self.shuffle_enabled and self._base_queue:
-            if queue_changed or not self._shuffle_order or len(self._shuffle_order) != len(self._base_queue):
-                self._apply_shuffle(current_item=self._current_item)
-            else:
-                self._ordered_queue = list(self._shuffle_order)
-                self.queue = list(self._shuffle_order)
-                if self._current_item in self.queue:
-                    self.index = self.queue.index(self._current_item)
-                elif self.queue:
-                    self.index = 0
+            if queue_changed:
+                old_order = [url for url in self._shuffle_order if url in self._base_queue]
+                if old_order:
+                    merged_order = list(old_order)
+                    for position, url in enumerate(self._base_queue):
+                        if url in old_order:
+                            continue
+                        old_before = sum(
+                            1 for previous in self._base_queue[:position] if previous in old_order
+                        )
+                        new_before = sum(
+                            1 for previous in self._base_queue[:position] if previous not in old_order
+                        )
+                        merged_order.insert(old_before + new_before, url)
+                    self._shuffle_order = merged_order
                 else:
-                    self.index = -1
-                self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
+                    self._apply_shuffle(current_item=self._current_item)
+            elif not self._shuffle_order:
+                self._apply_shuffle(current_item=self._current_item)
+
+            self._ordered_queue = list(self._shuffle_order)
+            self.queue = list(self._shuffle_order)
+            if self._current_item in self.queue:
+                self.index = self.queue.index(self._current_item)
+            elif self.queue:
+                self.index = 0
+            else:
+                self.index = -1
+            self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
         else:
             self.queue = list(self._base_queue)
             self._ordered_queue = list(self._base_queue)
@@ -111,7 +129,32 @@ class Player:
                 self.index = 0
             self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
 
+        self._priority_queue = [url for url in self._priority_queue if url in self.queue and url != self._current_item]
+        self._insert_priority_queue()
+
+    def _insert_priority_queue(self):
+        if not self._priority_queue or self._current_item not in self.queue:
+            return
+
+        self.queue = [url for url in self.queue if url not in self._priority_queue]
+        self.index = self.queue.index(self._current_item)
+        insert_at = self.index + 1
+        self.queue[insert_at:insert_at] = self._priority_queue
+
+    def queue_next(self, source):
+        """Place a track in the FIFO priority queue after the current track."""
+        if not source or source == self._current_item:
+            return
+
+        self._priority_queue = [url for url in self._priority_queue if url != source]
+        self._priority_queue.append(source)
+        if source not in self.queue:
+            self.queue.append(source)
+        self._insert_priority_queue()
+
     def next(self):
+        if self._current_item in self._priority_queue:
+            self._priority_queue.remove(self._current_item)
         if self.index + 1 < len(self.queue):
             self.index += 1
             self.play()
@@ -127,18 +170,15 @@ class Player:
 
         self.shuffle_enabled = bool(enabled)
         if self.shuffle_enabled and self._base_queue:
-            if self._shuffle_order and len(self._shuffle_order) != len(self._base_queue):
-                self._ordered_queue = list(self._shuffle_order)
-                self.queue = list(self._shuffle_order)
-                self.index = (
-                self._base_queue.index(self._current_item)
-                if self._current_item in self._base_queue
-                else 0)
-
-                self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
-            else:
+            if not self._shuffle_order:
                 self._apply_shuffle(current_item=self._current_item)
+            else:
+                self.queue = list(self._shuffle_order)
+                self.index = self.queue.index(self._current_item) if self._current_item in self.queue else 0
+                self._current_item = self.queue[self.index] if self.queue else None
         else:
+            self._shuffle_order = []
+            self._priority_queue = []
             self._ordered_queue = list(self._base_queue)
             self.queue = list(self._base_queue)
             self.index = (

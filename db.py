@@ -3,6 +3,7 @@ import re
 import sys
 import sqlite3
 import urllib.request
+import shutil
 from pathlib import Path
 
 def resource_path(relative_path):
@@ -16,17 +17,31 @@ def resource_path(relative_path):
 
 def data_path(relative_path):
     if getattr(sys, "frozen", False):
-        BASE_DIR = Path(sys.executable).resolve().parent
+        if os.name == "nt":
+            BASE_DIR = Path(sys.executable).resolve().parent
+        else:
+            BASE_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "music_engine"
     else:
         BASE_DIR = Path(__file__).resolve().parent
 
-    return BASE_DIR / relative_path
+    path = BASE_DIR / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
-FFMPEG_LOCATION = resource_path("ffmpeg/bin")
+def get_ffmpeg_location():
+    bundled = resource_path("ffmpeg/bin")
+    if os.name == "nt" and (bundled / "ffmpeg.exe").exists():
+        return str(bundled)
+    if shutil.which("ffmpeg"):
+        return shutil.which("ffmpeg")
+    return str(bundled) if bundled.exists() else None
+
+
+FFMPEG_LOCATION = get_ffmpeg_location()
 DB = data_path("music.db")
 PLAYLISTS_DIR = data_path("playlists")
-PLAYLISTS_DIR.mkdir(exist_ok=True)
+PLAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _sanitize_filename(value):
@@ -336,7 +351,7 @@ def download_audio_to_folder(url, title, folder):
         "retries": 3,
         "fragment_retries": 3,
         "js_runtimes": {"node": {}},
-        "ffmpeg_location": FFMPEG_LOCATION,
+        **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
         "outtmpl": out_template,
         "postprocessors": [
             {
