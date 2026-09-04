@@ -1,4 +1,8 @@
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QMediaDevices
+try:
+    from PySide6.QtMultimedia import QAudioBufferOutput
+except ImportError:
+    QAudioBufferOutput = None
 from PySide6.QtCore import QUrl, QTimer, Signal, QObject
 import os
 import random
@@ -13,6 +17,7 @@ class PlayerSignals(QObject):
     state_changed = Signal(object)  # QMediaPlayer state enum
     track_ended = Signal()  # Emitted when track finishes naturally
     autoplay_next = Signal()  # Signal to controller to play next
+    audio_buffer_received = Signal(object)
 
 
 class Player:
@@ -22,6 +27,13 @@ class Player:
         self.signals = PlayerSignals()
 
         self.player.setAudioOutput(self.audio)
+        self.audio_buffer_output = None
+        if QAudioBufferOutput is not None and hasattr(self.player, "setAudioBufferOutput"):
+            self.audio_buffer_output = QAudioBufferOutput(self.player)
+            self.player.setAudioBufferOutput(self.audio_buffer_output)
+            self.audio_buffer_output.audioBufferReceived.connect(
+                self.signals.audio_buffer_received.emit
+            )
 
         self.queue = []
         self.index = -1

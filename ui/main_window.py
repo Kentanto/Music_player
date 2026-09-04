@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QGridLayout
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtCore import QTimer
@@ -13,6 +13,7 @@ from .queue_panel import QueuePanel
 from .player_bar import PlayerBar
 from .cover_widget import CoverWidget
 from .fullscreen_player import FullscreenPlayer
+from .eq_visualizer import EQVisualizer
 
 
 class MainWindow(QMainWindow):
@@ -80,6 +81,9 @@ class MainWindow(QMainWindow):
         
         # ===== BOTTOM: Player controls =====
         self.player_bar = PlayerBar()
+        self.eq_visualizer = EQVisualizer(self.player_bar)
+        self.player_bar.controls_layout.addWidget(self.eq_visualizer, 1)
+        self.player_bar.controls_layout.addStretch()
         main_layout.addWidget(self.player_bar, 0)
 
         self.fullscreen_player = FullscreenPlayer(self)
@@ -110,6 +114,7 @@ class MainWindow(QMainWindow):
         self.player_bar.volume_changed.connect(self.volume_changed.emit)
         self.player_bar.seek_requested.connect(self.seek_requested.emit)
         self.player_bar.fullscreen_requested.connect(self.fullscreen_requested.emit)
+        self.fullscreen_player.seek_requested.connect(self.seek_requested.emit)
         
         # Sidebar
         self.sidebar.add_to_playlist_clicked.connect(self.add_to_playlist.emit)

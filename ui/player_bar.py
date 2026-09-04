@@ -40,9 +40,10 @@ class PlayerBar(QWidget):
         self.track_label.setAlignment(Qt.AlignCenter)
         self.track_label.setWordWrap(True)
         main_layout.addWidget(self.track_label)
-        
+
         # ===== Controls =====
         controls_layout = QHBoxLayout()
+        self.controls_layout = controls_layout
         
         # Previous button
         self.prev_btn = QPushButton("⏮ Prev")
@@ -69,7 +70,6 @@ class PlayerBar(QWidget):
         self.shuffle_btn.toggled.connect(self.shuffle_toggled.emit)
         controls_layout.addWidget(self.shuffle_btn)
         
-        controls_layout.addStretch()
         main_layout.addLayout(controls_layout)
         
         # ===== Volume =====

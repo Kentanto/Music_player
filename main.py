@@ -49,6 +49,10 @@ class MusicAppController:
         self.player.signals.duration_changed.connect(self.on_player_duration_changed)
         self.player.signals.state_changed.connect(self.on_player_state_changed)
         self.player.signals.autoplay_next.connect(self.handle_next_autoplay)
+        self.player.signals.audio_buffer_received.connect(self.window.eq_visualizer.update_buffer)
+        self.player.signals.audio_buffer_received.connect(
+            self.window.fullscreen_player.eq_visualizer.update_buffer
+        )
         
         # Connect all UI signals to handlers
         self.connect_handlers()
@@ -76,10 +80,13 @@ class MusicAppController:
             position_fraction = position_ms / duration_ms
             self.window.update_player_time(position_ms / 1000, duration_ms / 1000)
             self.window.player_bar.set_seek_position(position_fraction)
+            self.window.fullscreen_player.set_time(position_ms / 1000, duration_ms / 1000)
+            self.window.fullscreen_player.set_seek_position(position_fraction)
     
     def on_player_duration_changed(self, duration_ms):
         """Update total duration display"""
         self.window.update_player_time(0, duration_ms / 1000)
+        self.window.fullscreen_player.set_time(0, duration_ms / 1000)
     
     def on_player_state_changed(self, state):
         """Update UI button state when playback changes."""

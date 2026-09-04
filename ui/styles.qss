@@ -60,7 +60,7 @@ QListWidget[remoteHighlight="true"] {
 
 /* Search Bar */
 QLineEdit {
-    background-color: #282828;
+    background-color: #1e1e1e;
     color: #ffffff;
     border: 1px solid #404040;
     border-radius: 4px;
@@ -135,4 +135,92 @@ QScrollBar::handle:vertical {
 
 QScrollBar::handle:vertical:hover {
     background-color: #1db954;
+}
+
+/* Fullscreen player */
+QWidget#fullscreenInfoPanel {
+    background-color: #1e1e1e;
+    border-top: 1px solid #303030;
+}
+
+QLabel#fullscreenTitle {
+    color: #ffffff;
+    background-color: #1e1e1e;
+    font-size: 24px;
+    font-weight: bold;
+}
+
+QLabel#fullscreenArtist {
+    color: #a7a7a7;
+    background-color: #1e1e1e;
+}
+
+QLabel#fullscreenTime, QLabel#fullscreenVolumeLabel {
+    color: #a7a7a7;
+}
+
+QPushButton#fullscreenControl, QPushButton#fullscreenPlayControl {
+    min-width: 58px;
+    max-width: 58px;
+    min-height: 42px;
+    max-height: 42px;
+    padding: 0;
+    border: 1px solid #505050;
+    border-radius: 21px;
+    background-color: #252525;
+    color: #f2f2f2;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+QPushButton#fullscreenControl:hover {
+    background-color: #383838;
+    border-color: #7a7a7a;
+}
+
+QPushButton#fullscreenControl:pressed {
+    background-color: #1b1b1b;
+    border-color: #1db954;
+}
+
+QPushButton#fullscreenPlayControl {
+    min-width: 56px;
+    max-width: 56px;
+    min-height: 56px;
+    max-height: 56px;
+    border-radius: 28px;
+    background-color: #1db954;
+    color: #101010;
+    border-color: #1ed760;
+    font-size: 18px;
+}
+
+QPushButton#fullscreenPlayControl:hover {
+    background-color: #35c96a;
+    border-color: #75e39a;
+}
+
+QPushButton#fullscreenPlayControl:pressed {
+    background-color: #169c46;
+    border-color: #1ed760;
+}
+
+QLabel#fullscreenVolumeLabel {
+    color: #c4c4c4;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+QWidget#fullscreenVolumeControl {
+    background-color: #1e1e1e;
+    border-radius: 16px;
+}
+
+QSlider#fullscreenSeek {
+    min-width: 260px;
+}
+
+QSlider#fullscreenVolume {
+    min-width: 120px;
+    max-width: 120px;
 }
