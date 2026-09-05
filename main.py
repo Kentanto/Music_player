@@ -101,6 +101,7 @@ class MusicAppController:
         self.window.queue_panel.remove_requested.connect(self.handle_remove_song)
         self.window.queue_panel.rename_requested.connect(self.handle_rename_item)
         self.window.queue_panel.delete_playlist_requested.connect(self.handle_delete_playlist)
+        self.window.add_to_playlist_requested.connect(self.handle_add_to_playlist)
         self.window.track_selected.connect(self.handle_track_selected)
         self.window.next_track.connect(self.handle_next)
         self.window.prev_track.connect(self.handle_prev)
@@ -362,13 +363,11 @@ class MusicAppController:
         QMessageBox.warning(self.window, "Import List", f"Import failed: {reason}")
 
 
-    def handle_add_to_playlist(self):
+    def handle_add_to_playlist(self, item=None):
         """Add selected song to an existing or new playlist."""
-        index = self.window.get_current_track_index()
-        if index < 0 or index >= len(self.current_results):
+        item = item or self.window.queue_panel.get_current_item()
+        if not item:
             return
-
-        item = self.current_results[index]
         if item.get("type") == "playlist":
             QMessageBox.information(self.window, "Add to Playlist", "Please select a track to add to a playlist.")
             return

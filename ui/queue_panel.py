@@ -12,6 +12,7 @@ class QueuePanel(QWidget):
     item_previewed = Signal(object)  # Emitted when an item becomes keyboard-selected
     item_double_clicked = Signal(object)  # Emitted when user double-clicks an item
     queue_next_requested = Signal(object)  # Emitted when user wants to queue a track next
+    add_to_playlist_requested = Signal(object)
     remove_requested = Signal(object)  # Emitted when a playlist track should be removed
     rename_requested = Signal(object)  # Emitted when a playlist or track should be renamed
     delete_playlist_requested = Signal(object)  # Emitted when a playlist should be deleted
@@ -237,6 +238,9 @@ class QueuePanel(QWidget):
             pass
 
         menu = QMenu(self.list_widget)
+        add_to_playlist_action = None
+        if data.get("type") != "playlist":
+            add_to_playlist_action = menu.addAction("Add to Playlist")
         queue_next_action = menu.addAction("Queue Next")
         remove_action = None
         rename_action = menu.addAction("Rename Playlist" if data.get("type") == "playlist" else "Rename Song")
@@ -246,7 +250,9 @@ class QueuePanel(QWidget):
         if data.get("type") == "track" and data.get("file_path"):
             remove_action = menu.addAction("Remove and Delete File")
         action = menu.exec_(self.list_widget.mapToGlobal(point))
-        if action == queue_next_action:
+        if action == add_to_playlist_action:
+            self.add_to_playlist_requested.emit(data)
+        elif action == queue_next_action:
             self.queue_next_requested.emit(data)
         elif action == rename_action:
             self.rename_requested.emit(data)

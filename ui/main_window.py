@@ -24,6 +24,7 @@ class MainWindow(QMainWindow):
     play_pause_track = Signal()
     play_track_index = Signal(object)  # Play specific track by index
     queue_next_requested = Signal(object)
+    add_to_playlist_requested = Signal(object)
     next_track = Signal()
     prev_track = Signal()
     shuffle_toggled = Signal(bool)
@@ -107,6 +108,7 @@ class MainWindow(QMainWindow):
         self.queue_panel.item_previewed.connect(self.on_queue_item_selected)
         self.queue_panel.item_double_clicked.connect(self.on_queue_item_double_clicked)
         self.queue_panel.queue_next_requested.connect(self.queue_next_requested.emit)
+        self.queue_panel.add_to_playlist_requested.connect(self.add_to_playlist_requested.emit)
         
         # Player controls
         self.player_bar.play_pause_clicked.connect(self.play_pause_track.emit)
