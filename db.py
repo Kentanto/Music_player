@@ -180,7 +180,7 @@ def get_songs():
 def get_song_by_url(url):
     with sqlite3.connect(DB) as conn:
         return conn.execute(
-            "SELECT id, title FROM songs WHERE url=?",
+            "SELECT id, title, artist, thumbnail FROM songs WHERE url=?",
             (url,),
         ).fetchone()
 
@@ -507,7 +507,7 @@ def rename_playlist_song(playlist_id, file_path, new_title):
     return str(target)
 
 
-def add_song_to_playlist(title, url, playlist_id):
+def add_song_to_playlist(title, url, playlist_id, artist=None, thumbnail=None):
     print(
         f"[playlist-db] add request: title={title!r}, url={url!r}, playlist_id={playlist_id}",
         flush=True,
@@ -529,6 +529,8 @@ def add_song_to_playlist(title, url, playlist_id):
     existing_song = get_song_by_url(url)
     song_id = existing_song[0] if existing_song else None
     download_title = existing_song[1] if existing_song and existing_song[1] else title
+    artist = artist or (existing_song[2] if existing_song else None)
+    thumbnail = thumbnail or (existing_song[3] if existing_song else None)
     print(
         f"[playlist-db] resolved: song_id={song_id}, download_title={download_title!r}, folder={folder!r}",
         flush=True,
@@ -552,25 +554,32 @@ def add_song_to_playlist(title, url, playlist_id):
     print(f"[playlist-db] downloaded: {file_path}", flush=True)
 
     if song_id is None:
-        song_id = save_song(download_title, url)
+        song_id = save_song(download_title, url, artist, thumbnail)
     if not song_id:
         print("[playlist-db] failed to save song metadata", flush=True)
         return None
 
     with sqlite3.connect(DB) as conn:
         c = conn.cursor()
-        c.execute(
-            "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
-            (playlist_id, song_id, file_path)
-        )
-        if c.rowcount == 0:
-            print(
-                f"[playlist-db] insert ignored: playlist_id={playlist_id}, song_id={song_id}, file={file_path!r}",
-                flush=True,
+        existing_row = c.execute(
+            "SELECT id FROM playlist_songs WHERE playlist_id=? AND song_id=?",
+            (playlist_id, song_id),
+        ).fetchone()
+        if existing_row:
+            c.execute(
+                "UPDATE playlist_songs SET file_path=? WHERE id=?",
+                (file_path, existing_row[0]),
             )
-            return None
+            print(f"[playlist-db] repaired existing row: id={existing_row[0]}", flush=True)
+        else:
+            c.execute(
+                "INSERT INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
+                (playlist_id, song_id, file_path),
+            )
+            print(f"[playlist-db] inserted: playlist_id={playlist_id}, song_id={song_id}", flush=True)
         conn.commit()
-    print(f"[playlist-db] inserted: playlist_id={playlist_id}, song_id={song_id}", flush=True)
+    if artist or thumbnail:
+        update_song_metadata(url, None, artist, thumbnail)
     return file_path
 
 

@@ -397,7 +397,13 @@ class MusicAppController:
             f"[playlist-add] starting: title={track_title!r}, url={track_url!r}, playlist_id={playlist_id}",
             flush=True,
         )
-        saved_path = add_song_to_playlist(track_title, track_url, playlist_id)
+        saved_path = add_song_to_playlist(
+            track_title,
+            track_url,
+            playlist_id,
+            artist=item.get("artist"),
+            thumbnail=item.get("thumbnail"),
+        )
         if saved_path:
             print(f"[playlist-add] success: {saved_path}", flush=True)
             QMessageBox.information(self.window, "Playlist", f"Added \"{track_title}\" to playlist successfully.\n\nFile: {saved_path}")
