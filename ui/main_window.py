@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
         
         self.init_ui()
+        self._selected_queue_item = None
         self.connect_signals()
     
     def init_ui(self):
@@ -207,7 +208,11 @@ class MainWindow(QMainWindow):
     
     def on_queue_item_selected(self, item):
         """Handle queue item selection"""
+        self._selected_queue_item = item
         self.track_selected.emit(item)
+
+    def get_selected_queue_item(self):
+        return self._selected_queue_item or self.queue_panel.get_current_item()
 
     def on_queue_item_double_clicked(self, item):
         if item.get("type") == "playlist":
@@ -217,10 +222,12 @@ class MainWindow(QMainWindow):
     
     def display_results(self, results, preserve_order=False, current_item_source=None):
         """Display search results in queue panel"""
+        self._selected_queue_item = None
         self.queue_panel.add_items(results, preserve_order=preserve_order, current_item_source=current_item_source)
     
     def display_library(self, songs, preserve_order=False, current_item_source=None):
         """Display library songs"""
+        self._selected_queue_item = None
         results = []
         for song in songs:
             if len(song) == 2:
@@ -233,6 +240,7 @@ class MainWindow(QMainWindow):
 
     def display_playlists(self, playlists, preserve_order=False, current_item_source=None):
         """Display playlist list in the queue panel"""
+        self._selected_queue_item = None
         self.queue_panel.add_items(playlists, preserve_order=preserve_order, current_item_source=current_item_source)
     
     def get_current_queue_urls(self):

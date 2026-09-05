@@ -6,6 +6,7 @@ import urllib.request
 import shutil
 import urllib.parse
 import uuid
+import traceback
 from pathlib import Path
 
 def resource_path(relative_path):
@@ -174,6 +175,14 @@ def get_songs():
         c = conn.cursor()
         c.execute("SELECT title, url FROM songs")
         return c.fetchall()
+
+
+def get_song_by_url(url):
+    with sqlite3.connect(DB) as conn:
+        return conn.execute(
+            "SELECT id, title FROM songs WHERE url=?",
+            (url,),
+        ).fetchone()
 
 
 def create_playlist(name):
@@ -499,24 +508,53 @@ def rename_playlist_song(playlist_id, file_path, new_title):
 
 
 def add_song_to_playlist(title, url, playlist_id):
-    song_id = save_song(title, url)
-    if not song_id:
+    print(
+        f"[playlist-db] add request: title={title!r}, url={url!r}, playlist_id={playlist_id}",
+        flush=True,
+    )
+    if not title or not url:
+        print("[playlist-db] rejected: missing title or URL", flush=True)
         return None
-
-    existing_file = get_playlist_song(playlist_id, song_id)
-    if existing_file and os.path.exists(existing_file):
-        return existing_file
 
     playlist = get_playlist_by_id(playlist_id)
     if not playlist:
+        print(f"[playlist-db] rejected: playlist not found: {playlist_id}", flush=True)
         return None
 
     _, _, folder = playlist
     if not folder:
+        print(f"[playlist-db] rejected: playlist has no folder: {playlist_id}", flush=True)
         return None
 
-    file_path = download_audio_to_folder(url, title, folder)
+    existing_song = get_song_by_url(url)
+    song_id = existing_song[0] if existing_song else None
+    download_title = existing_song[1] if existing_song and existing_song[1] else title
+    print(
+        f"[playlist-db] resolved: song_id={song_id}, download_title={download_title!r}, folder={folder!r}",
+        flush=True,
+    )
+
+    if song_id:
+        existing_file = get_playlist_song(playlist_id, song_id)
+        if existing_file and os.path.exists(existing_file):
+            try:
+                if Path(existing_file).resolve().parent == Path(folder).resolve():
+                    print(f"[playlist-db] already exists: {existing_file}", flush=True)
+                    return existing_file
+            except OSError:
+                pass
+
+    print("[playlist-db] downloading selected song", flush=True)
+    file_path = download_audio_to_folder(url, download_title, folder)
     if not file_path:
+        print("[playlist-db] download returned no filepath", flush=True)
+        return None
+    print(f"[playlist-db] downloaded: {file_path}", flush=True)
+
+    if song_id is None:
+        song_id = save_song(download_title, url)
+    if not song_id:
+        print("[playlist-db] failed to save song metadata", flush=True)
         return None
 
     with sqlite3.connect(DB) as conn:
@@ -525,7 +563,14 @@ def add_song_to_playlist(title, url, playlist_id):
             "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
             (playlist_id, song_id, file_path)
         )
+        if c.rowcount == 0:
+            print(
+                f"[playlist-db] insert ignored: playlist_id={playlist_id}, song_id={song_id}, file={file_path!r}",
+                flush=True,
+            )
+            return None
         conn.commit()
+    print(f"[playlist-db] inserted: playlist_id={playlist_id}, song_id={song_id}", flush=True)
     return file_path
 
 
@@ -556,7 +601,11 @@ def download_audio_to_folder(url, title, folder):
     os.makedirs(folder, exist_ok=True)
 
     safe_title = _sanitize_filename(title) or "audio"
-    out_template = os.path.join(folder, f"{safe_title} - %(id)s.%(ext)s")
+    out_template = os.path.join(folder, f"{safe_title}.%(ext)s")
+    print(
+        f"[audio-download] start: url={url!r}, title={title!r}, folder={folder!r}, template={out_template!r}",
+        flush=True,
+    )
 
     ydl_opts = {
         "format": "bestaudio[protocol=https]/bestaudio/best",
@@ -586,28 +635,33 @@ def download_audio_to_folder(url, title, folder):
             info = ydl.extract_info(url, download=False)
             duration = info.get("duration", 0)
             if duration and duration > 600:
+                print(f"[audio-download] rejected: duration={duration}s", flush=True)
                 return None
 
             info = ydl.extract_info(url, download=True)
             video_id = info.get("id")
             if not video_id:
+                print("[audio-download] failed: yt-dlp returned no video ID", flush=True)
                 return None
 
-            target_path = os.path.join(folder, f"{safe_title} - {video_id}.mp3")
+            target_path = os.path.join(folder, f"{safe_title}.mp3")
             if os.path.exists(target_path):
                 download_thumbnail(info.get("thumbnail"), target_path)
                 update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                 return target_path
 
             for ext in ["mp3", "m4a", "opus", "wav", "aac"]:
-                alt_path = os.path.join(folder, f"{safe_title} - {video_id}.{ext}")
+                alt_path = os.path.join(folder, f"{safe_title}.{ext}")
                 if os.path.exists(alt_path):
                     download_thumbnail(info.get("thumbnail"), alt_path)
                     update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                     return alt_path
-    except Exception:
+    except Exception as error:
+        print(f"[audio-download] exception: {type(error).__name__}: {error}", flush=True)
+        traceback.print_exc()
         return None
 
+    print("[audio-download] failed: download completed but no output file was found", flush=True)
     return None
 
 

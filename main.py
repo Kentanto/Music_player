@@ -365,23 +365,44 @@ class MusicAppController:
 
     def handle_add_to_playlist(self, item=None):
         """Add selected song to an existing or new playlist."""
-        item = item or self.window.queue_panel.get_current_item()
+        item = item or self.window.get_selected_queue_item()
+        print(f"[playlist-add] selected item: {item!r}", flush=True)
         if not item:
+            print("[playlist-add] aborted: no selected item", flush=True)
             return
         if item.get("type") == "playlist":
+            print("[playlist-add] aborted: selected item is a playlist", flush=True)
             QMessageBox.information(self.window, "Add to Playlist", "Please select a track to add to a playlist.")
             return
 
         track_title = item.get("title")
-        track_url = item.get("url")
+        track_url = item.get("url") or item.get("file_path")
+        if not track_title or not track_url:
+            print(
+                f"[playlist-add] aborted: missing title or URL; title={track_title!r}, url={track_url!r}",
+                flush=True,
+            )
+            QMessageBox.warning(
+                self.window,
+                "Add to Playlist",
+                "The selected song has no usable title or file path.",
+            )
+            return
         playlist_id = self._choose_playlist()
         if not playlist_id:
+            print("[playlist-add] aborted: no destination playlist selected", flush=True)
             return
 
+        print(
+            f"[playlist-add] starting: title={track_title!r}, url={track_url!r}, playlist_id={playlist_id}",
+            flush=True,
+        )
         saved_path = add_song_to_playlist(track_title, track_url, playlist_id)
         if saved_path:
+            print(f"[playlist-add] success: {saved_path}", flush=True)
             QMessageBox.information(self.window, "Playlist", f"Added \"{track_title}\" to playlist successfully.\n\nFile: {saved_path}")
         else:
+            print("[playlist-add] failed: add_song_to_playlist returned no path", flush=True)
             QMessageBox.warning(self.window, "Playlist", "Failed to add song to playlist.")
 
     def _choose_playlist(self):
