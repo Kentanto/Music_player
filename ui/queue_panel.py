@@ -1,6 +1,6 @@
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QLineEdit, QComboBox, QMenu
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtGui import QColor
 import random
 
@@ -9,6 +9,7 @@ class QueuePanel(QWidget):
     """Displays search results or queue"""
     
     item_selected = Signal(object)  # Emitted when user selects an item
+    item_previewed = Signal(object)  # Emitted when an item becomes keyboard-selected
     item_double_clicked = Signal(object)  # Emitted when user double-clicks an item
     queue_next_requested = Signal(object)  # Emitted when user wants to queue a track next
     remove_requested = Signal(object)  # Emitted when a playlist track should be removed
@@ -51,9 +52,11 @@ class QueuePanel(QWidget):
         # List widget
         self.list_widget = QListWidget()
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.installEventFilter(self)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.itemClicked.connect(self.on_item_clicked)
         self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.list_widget.currentItemChanged.connect(self.on_current_item_changed)
         layout.addWidget(self.list_widget)
         
         self.setLayout(layout)
@@ -183,6 +186,22 @@ class QueuePanel(QWidget):
     def on_item_clicked(self, item):
         idx = self.list_widget.row(item)
         self.item_selected.emit(self.items_data[idx])
+
+    def on_current_item_changed(self, current, previous):
+        if current is None:
+            return
+        idx = self.list_widget.row(current)
+        if 0 <= idx < len(self.items_data):
+            self.item_previewed.emit(self.items_data[idx])
+
+    def eventFilter(self, watched, event):
+        if watched is self.list_widget and event.type() == QEvent.KeyPress:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                idx = self.list_widget.currentRow()
+                if 0 <= idx < len(self.items_data):
+                    self.item_double_clicked.emit(self.items_data[idx])
+                    return True
+        return super().eventFilter(watched, event)
     
     def on_item_double_clicked(self, item):
         idx = self.list_widget.row(item)

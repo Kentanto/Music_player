@@ -10,9 +10,10 @@ from PySide6.QtWidgets import (
     QStackedLayout,
     QGraphicsOpacityEffect,
     QApplication,
+    QStyle,
 )
-from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QTimer, QRect, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap, QRegion
+from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QTimer, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap, QRegion, QIcon
 
 from .eq_visualizer import EQVisualizer
 
@@ -49,12 +50,14 @@ class FullscreenPlayer(QWidget):
     volume_changed = Signal(int)
     seek_requested = Signal(float)
 
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cover_pixmap = QPixmap()
         self._last_cover_size = None
         self._is_playing = False
         self._idle_mode = False
+        self._cursor_hidden = False
         self._idle_timer = QTimer(self)
         self._idle_timer.setSingleShot(True)
         self._idle_timer.setInterval(self.IDLE_TIMEOUT_MS)
@@ -65,6 +68,21 @@ class FullscreenPlayer(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         self.setMouseTracking(True)
         self._init_ui()
+
+    def _white_icon(self, standard_icon):
+        pixmap = standard_icon.pixmap(QSize(24, 24))
+
+        white_pixmap = QPixmap(pixmap.size())
+        white_pixmap.fill(Qt.transparent)
+
+        painter = QPainter(white_pixmap)
+        painter.setCompositionMode(QPainter.CompositionMode_Source)
+        painter.fillRect(white_pixmap.rect(), Qt.white)
+        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        return QIcon(white_pixmap)
 
     def _init_ui(self):
         layout = QGridLayout(self)
@@ -147,23 +165,42 @@ class FullscreenPlayer(QWidget):
         volume_layout.addWidget(self.volume_slider)
         controls.addWidget(volume_control, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
 
-        self.prev_button = QPushButton("<<")
+        self.prev_button = QPushButton()
         self.prev_button.setObjectName("fullscreenControl")
         self.prev_button.setToolTip("Previous track")
+        self.prev_button.setIconSize(QSize(24, 24))
+        self.prev_button.setIcon(
+            self._white_icon(
+                self.style().standardIcon(
+                    QStyle.StandardPixmap.SP_MediaSkipBackward
+                )
+            )
+        )
         self.prev_button.clicked.connect(self.prev_clicked.emit)
         transport_controls.addWidget(self.prev_button)
 
-        self.play_pause_button = QPushButton(">")
+        self.play_pause_button = QPushButton()
         self.play_pause_button.setObjectName("fullscreenPlayControl")
         self.play_pause_button.setToolTip("Play or pause")
+        self.play_pause_button.setIconSize(QSize(24, 24))
+        self.set_play_pause_state(False)
         self.play_pause_button.clicked.connect(self.play_pause_clicked.emit)
         transport_controls.addWidget(self.play_pause_button)
 
-        self.next_button = QPushButton(">>")
+        self.next_button = QPushButton()
         self.next_button.setObjectName("fullscreenControl")
         self.next_button.setToolTip("Next track")
+        self.next_button.setIconSize(QSize(24, 24))
+        self.next_button.setIcon(
+            self._white_icon(
+                self.style().standardIcon(
+                    QStyle.StandardPixmap.SP_MediaSkipForward
+                )
+            )
+        )
         self.next_button.clicked.connect(self.next_clicked.emit)
         transport_controls.addWidget(self.next_button)
+        
         controls.addLayout(transport_controls, 0, 0, Qt.AlignCenter)
         self.eq_visualizer = EQVisualizer()
         self.eq_visualizer.setMinimumWidth(0)
@@ -219,7 +256,12 @@ class FullscreenPlayer(QWidget):
 
     def set_play_pause_state(self, playing):
         self._is_playing = bool(playing)
-        self.play_pause_button.setText("||" if self._is_playing else ">")
+        icon = (
+            QStyle.StandardPixmap.SP_MediaPause
+            if self._is_playing
+            else QStyle.StandardPixmap.SP_MediaPlay
+        )
+        self.play_pause_button.setIcon(self.style().standardIcon(icon))
 
     def set_volume(self, value):
         self.volume_slider.blockSignals(True)
@@ -298,7 +340,7 @@ class FullscreenPlayer(QWidget):
                 + self.eq_visualizer.height()
                 - 23
                 - badge.height() // 2
-                + 1,
+                - 1,
             ),
         )
         badge.raise_()
@@ -320,6 +362,7 @@ class FullscreenPlayer(QWidget):
         if application is not None:
             application.removeEventFilter(self)
         self._idle_timer.stop()
+        self._set_cursor_hidden(False)
         super().hideEvent(event)
 
     def eventFilter(self, watched, event):
@@ -347,6 +390,7 @@ class FullscreenPlayer(QWidget):
         if self._idle_mode == idle:
             return
         self._idle_mode = idle
+        self._set_cursor_hidden(idle)
         target = self._eq_progress_overlay if idle else self._controls_stack.widget(0)
         self._controls_stack.setCurrentWidget(target)
 
@@ -358,6 +402,20 @@ class FullscreenPlayer(QWidget):
         self._transition_animation.setStartValue(0.0)
         self._transition_animation.setEndValue(1.0)
         self._transition_animation.start()
+
+    def _set_cursor_hidden(self, hidden):
+        if self._cursor_hidden == hidden:
+            return
+
+        application = QApplication.instance()
+        if application is None:
+            return
+
+        if hidden:
+            application.setOverrideCursor(Qt.CursorShape.BlankCursor)
+        elif application.overrideCursor() is not None:
+            application.restoreOverrideCursor()
+        self._cursor_hidden = hidden
 
     def _fit_cover_art(self):
         if self._cover_pixmap.isNull():

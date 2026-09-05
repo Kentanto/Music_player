@@ -21,7 +21,6 @@ from db import (
     delete_playlist,
     get_app_setting,
     set_app_setting,
-    backfill_thumbnails,
     thumbnail_path_for_audio,
     get_track_metadata,
 )
@@ -41,7 +40,6 @@ class MusicAppController:
         self.player = Player()
         self.current_results = []
         self.metadata_fetcher = None  # Background thread for duration checking
-        self.thumbnail_backfill = None
         self.spotify_import_worker = None
         self.cec_remote = None
         self.active_queue_urls = []
@@ -72,9 +70,6 @@ class MusicAppController:
         
         # Set initial volume AFTER handlers are connected
         self.window.player_bar.volume_slider.setValue(30)
-
-        # Fill artwork for tracks downloaded before thumbnail support existed.
-        self._start_thumbnail_backfill()
     
     def on_player_position_changed(self, position_ms):
         """Update seek bar as song plays"""
@@ -95,6 +90,7 @@ class MusicAppController:
         """Update UI button state when playback changes."""
         is_playing = state == self.player.player.PlaybackState.PlayingState
         self.window.player_bar.set_play_pause_state(is_playing)
+        self.window.fullscreen_player.set_play_pause_state(is_playing)
     
     def connect_handlers(self):
         """Connect UI signals to business logic"""
@@ -143,18 +139,6 @@ class MusicAppController:
             self._start_metadata_fetcher()
         self._sync_queue_from_current_items()
 
-    def _start_thumbnail_backfill(self):
-        """Backfill artwork without blocking the application window."""
-        from PySide6.QtCore import QThread
-
-        class ThumbnailBackfill(QThread):
-            def run(self):
-                print("[thumbnail-backfill] Started", flush=True)
-                backfill_thumbnails()
-
-        self.thumbnail_backfill = ThumbnailBackfill(self.window)
-        self.thumbnail_backfill.start()
-    
     def handle_play(self):
         """Play current track selection or resume if paused"""
 
@@ -367,9 +351,9 @@ class MusicAppController:
         )
         self.spotify_import_worker.start()
 
-    def _on_import_completed(self, playlist_id, failed_count, playlist_name):
+    def _on_import_completed(self, playlist_id, failed_count, playlist_name, failure_log):
         self.handle_open_playlist(playlist_id)
-        message = f'Imported "{playlist_name}".'
+        message = f'Imported "{playlist_name}".\nError log: {failure_log}'
         if failed_count:
             message += f" {failed_count} track(s) were logged as failed."
         QMessageBox.information(self.window, "Import List", message)
@@ -436,8 +420,9 @@ class MusicAppController:
         return None
     def handle_volume_change(self, value):
         """Update player volume"""
-        # print(f"Volume changed to: {value}")
         self.player.set_volume(value)
+        self.window.player_bar.set_volume(value)
+        self.window.fullscreen_player.set_volume(value)
     
     def handle_seek(self, position):
         """Seek to position (0.0-1.0)"""
@@ -457,9 +442,6 @@ class MusicAppController:
         """Stop background work before Qt destroys the application."""
         if self.metadata_fetcher and self.metadata_fetcher.isRunning():
             self.metadata_fetcher.stop()
-        if self.thumbnail_backfill and self.thumbnail_backfill.isRunning():
-            self.thumbnail_backfill.quit()
-            self.thumbnail_backfill.wait()
         if self.spotify_import_worker and self.spotify_import_worker.isRunning():
             self.spotify_import_worker.quit()
             self.spotify_import_worker.wait()

@@ -104,6 +104,7 @@ class MainWindow(QMainWindow):
         
         # Queue selection
         self.queue_panel.item_selected.connect(self.on_queue_item_selected)
+        self.queue_panel.item_previewed.connect(self.on_queue_item_selected)
         self.queue_panel.item_double_clicked.connect(self.on_queue_item_double_clicked)
         self.queue_panel.queue_next_requested.connect(self.queue_next_requested.emit)
         

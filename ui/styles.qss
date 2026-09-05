@@ -223,6 +223,22 @@ QPushButton#fullscreenPlayControl:pressed {
     border-color: #1ed760;
 }
 
+QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl {
+    background-color: #1db954;
+    border: 2px solid #1ed760;
+    color: #101010;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:hover {
+    background-color: #35c96a;
+    border-color: #75e39a;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:pressed {
+    background-color: #169c46;
+    border-color: #1ed760;
+}
+
 QLabel#fullscreenVolumeLabel {
     color: #c4c4c4;
     font-size: 12px;

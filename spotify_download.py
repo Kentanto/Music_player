@@ -1,7 +1,7 @@
 """Import a Spotify playlist into the Music Engine library."""
 
-import os
 from datetime import datetime
+from pathlib import Path
 
 import spotipy
 from PySide6.QtCore import QThread, Signal
@@ -22,6 +22,7 @@ SPOTIFY_CLIENT_SECRET = "9fca954348d84b658aeb2987a068ef69"
 PLAYLIST_NAME = "Spotify Import"
 MAX_VIDEO_DURATION = 10 * 60
 SEARCH_RESULTS = 10
+FAILURE_LOG_NAME = "failed_songs.txt"
 
 
 def _playlist_id(url):
@@ -82,6 +83,8 @@ def import_playlist(playlist_url, progress=None):
         raise RuntimeError("Could not create the import playlist")
 
     playlist_id, playlist_name, folder = playlist_row
+    failure_log = _failure_log_path(folder)
+    failure_log.touch(exist_ok=True)
     failures = []
     tracks = _tracks(client, playlist_url)
     for index, item in enumerate(tracks, start=1):
@@ -108,18 +111,24 @@ def import_playlist(playlist_url, progress=None):
         except Exception as error:
             failures.append((song_name, str(error)))
             _log_failure(folder, song_name, str(error))
-    return playlist_id, failures, playlist_name
+    return playlist_id, failures, playlist_name, str(failure_log)
+
+
+def _failure_log_path(folder):
+    log_path = Path(folder) / FAILURE_LOG_NAME
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    return log_path
 
 
 def _log_failure(folder, song, reason):
     timestamp = datetime.now().isoformat(timespec="seconds")
-    with open(os.path.join(folder, "((__failed_songs__)).txt"), "a", encoding="utf-8") as log:
+    with _failure_log_path(folder).open("a", encoding="utf-8", newline="") as log:
         log.write(f"[{timestamp}] {song}: {reason}\n")
 
 
 class SpotifyImportWorker(QThread):
     progress = Signal(int, int, str)
-    completed = Signal(int, int, str)
+    completed = Signal(int, int, str, str)
     failed = Signal(str)
 
     def __init__(self, playlist_url, parent=None):
@@ -128,10 +137,10 @@ class SpotifyImportWorker(QThread):
 
     def run(self):
         try:
-            playlist_id, failures, playlist_name = import_playlist(
+            playlist_id, failures, playlist_name, failure_log = import_playlist(
                 self.playlist_url,
                 lambda current, total, title: self.progress.emit(current, total, title)
             )
-            self.completed.emit(playlist_id, len(failures), playlist_name)
+            self.completed.emit(playlist_id, len(failures), playlist_name, failure_log)
         except Exception as error:
             self.failed.emit(str(error))

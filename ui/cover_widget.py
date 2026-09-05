@@ -20,8 +20,8 @@ class CoverWidget(QWidget):
         self.cover_label = QLabel("🎵")
         self.cover_label.setFont(QFont("Arial", 80))
         self.cover_label.setAlignment(Qt.AlignCenter)
-        self.cover_label.setMinimumSize(240, 240)
-        self.cover_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.cover_label.setMinimumSize(240, 135)
+        self.cover_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.cover_label.setStyleSheet(
             "QLabel { background-color: #121212; border: 1px solid #404040; }"
         )
@@ -61,7 +61,15 @@ class CoverWidget(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._update_cover_size()
         self._fit_cover_art()
+
+    def _update_cover_size(self):
+        available_width = max(240, self.width() - 20)
+        available_height = max(135, self.height() - 100)
+        cover_width = min(available_width, int(available_height * 16 / 9))
+        cover_height = max(135, int(cover_width * 9 / 16))
+        self.cover_label.setFixedSize(cover_width, cover_height)
 
     def _fit_cover_art(self):
         if self._cover_pixmap.isNull():
