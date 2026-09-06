@@ -218,10 +218,11 @@ class MainWindow(QMainWindow):
 
     def _should_highlight(self, target):
         """Return whether a target should get the green highlight border."""
-        if self.fullscreen_player.isVisible():
+        # Never highlight the invisible eq-seek slider in idle mode
+        if target is getattr(self.fullscreen_player, "eq_seek_slider", None):
             return False
         return True
-    
+
     def _adjust_slider(self, slider, direction):
         if slider is self.player_bar.volume_slider or slider is self.fullscreen_player.volume_slider:
             delta = -5 if direction == "left" else 5
