@@ -52,22 +52,19 @@ QPushButton:pressed {
 QPushButton[remoteHighlight="true"], QLineEdit[remoteHighlight="true"],
 QSlider[remoteHighlight="true"], QListWidget[remoteHighlight="true"],
 QComboBox[remoteHighlight="true"] {
-    border: 3px solid #1ed760;
+    border: 2px solid #1ed760;
 }
 
 QPushButton[remoteHighlight="true"] {
     background-color: #1b2a20;
 }
 
-QLineEdit[remoteHighlight="true"] {
+QLineEdit[remoteHighlight="true"], QLineEdit[remoteHighlight="true"]:focus {
     background-color: #1b2a20;
+    border: 2px solid #1ed760;
 }
 
 QComboBox[remoteHighlight="true"] {
-    background-color: #1b2a20;
-}
-
-QListWidget[remoteHighlight="true"] {
     background-color: #1b2a20;
 }
 
