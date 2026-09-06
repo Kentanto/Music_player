@@ -1,9 +1,10 @@
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QGridLayout
+    QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QGridLayout,
+    QApplication, QAbstractButton, QLineEdit, QListWidget, QSlider,
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QShortcut, QKeySequence
+from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence
 
 
 
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
     open_playlist_requested = Signal(int)
     volume_changed = Signal(int)
     seek_requested = Signal(float)
+    seek_delta_requested = Signal(int)
     fullscreen_requested = Signal()
     track_selected = Signal(object)
     
@@ -136,48 +138,100 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.prev_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.play_pause_track.emit)
 
-    def regular_navigation_targets(self):
+    def _navigation_rows(self):
+        if self.fullscreen_player.isVisible():
+            if self.fullscreen_player._idle_mode:
+                return [[self.fullscreen_player.eq_seek_slider]]
+            return [
+                [self.fullscreen_player.seek_slider],
+                [
+                    self.fullscreen_player.prev_button,
+                    self.fullscreen_player.play_pause_button,
+                    self.fullscreen_player.next_button,
+                ],
+                [self.fullscreen_player.volume_slider],
+            ]
+
         return [
-            self.search_panel.search_bar,
-            self.sidebar.playlists_btn,
-            self.sidebar.add_to_playlist_btn,
-            self.sidebar.import_list_btn,
-            self.queue_panel.list_widget,
-            self.player_bar.prev_btn,
-            self.player_bar.play_pause_btn,
-            self.player_bar.next_btn,
-            self.player_bar.shuffle_btn,
-            self.player_bar.volume_slider,
-            self.player_bar.fullscreen_btn,
+            [self.search_panel.search_bar],
+            [
+                self.sidebar.playlists_btn,
+                self.sidebar.add_to_playlist_btn,
+                self.sidebar.import_list_btn,
+            ],
+            [self.queue_panel.list_widget],
+            [self.player_bar.seek_slider],
+            [
+                self.player_bar.prev_btn,
+                self.player_bar.play_pause_btn,
+                self.player_bar.next_btn,
+                self.player_bar.shuffle_btn,
+                self.player_bar.fullscreen_btn,
+            ],
+            [self.player_bar.volume_slider],
         ]
 
+    def regular_navigation_targets(self):
+        return [target for row in self._navigation_rows() for target in row]
+
     def navigate_remote(self, direction):
-        targets = (
-            self.fullscreen_player.navigation_targets()
-            if self.fullscreen_player.isVisible()
-            else self.regular_navigation_targets()
-        )
+        rows = self._navigation_rows()
+        targets = [target for row in rows for target in row]
         if not targets:
             return
 
-        step = -1 if direction in {"left", "up"} else 1
-        if self._remote_highlighted not in targets:
-            self._remote_target_index = 0 if step > 0 else len(targets) - 1
+        current = self._remote_highlighted
+        if isinstance(current, QListWidget) and direction in {"up", "down"}:
+            row = current.currentRow()
+            next_row = row + (1 if direction == "down" else -1)
+            if 0 <= next_row < current.count():
+                current.setCurrentRow(next_row)
+                self._remote_clear_timer.start(2500)
+                return
+
+        if current in targets and isinstance(current, QSlider) and direction in {"left", "right"}:
+            self.seek_delta_requested.emit(-5 if direction == "left" else 5)
+            self._remote_clear_timer.start(2500)
+            return
+
+        if current not in targets:
+            row_index = 0 if direction in {"down", "right"} else len(rows) - 1
+            target_index = 0 if direction in {"down", "right"} else len(rows[row_index]) - 1
         else:
-            self._remote_target_index = (self._remote_target_index + step) % len(targets)
-        self._set_remote_highlight(targets[self._remote_target_index])
+            row_index = next(index for index, row in enumerate(rows) if current in row)
+            current_index = rows[row_index].index(current)
+            if direction in {"left", "right"}:
+                target_index = (current_index + (1 if direction == "right" else -1)) % len(rows[row_index])
+            else:
+                target_row = row_index + (1 if direction == "down" else -1)
+                target_row %= len(rows)
+                target_index = min(current_index, len(rows[target_row]) - 1)
+                row_index = target_row
+
+        target = rows[row_index][target_index]
+        self._remote_target_index = targets.index(target)
+        self._set_remote_highlight(target)
 
     def activate_remote_target(self):
         target = self._remote_highlighted
         if target is None:
             return
-        if target is self.queue_panel.list_widget:
+        if isinstance(target, QListWidget):
             item = target.currentItem()
             if item:
                 item.setSelected(True)
-                self.queue_panel.item_double_clicked.emit(item)
-        elif hasattr(target, "click"):
+                target.itemActivated.emit(item)
+        elif isinstance(target, QAbstractButton):
             target.click()
+        elif isinstance(target, QLineEdit):
+            event = QKeyEvent(
+                QKeyEvent.Type.KeyPress,
+                Qt.Key_Return,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            QApplication.postEvent(target, event)
+        elif isinstance(target, QSlider):
+            target.setFocus(Qt.OtherFocusReason)
 
     def _set_remote_highlight(self, target):
         if self._remote_highlighted is not None:
