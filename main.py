@@ -126,6 +126,7 @@ class MusicAppController:
         self.cec_remote.next_track.connect(self.handle_next)
         self.cec_remote.previous_track.connect(self.handle_prev)
         self.cec_remote.stop_requested.connect(self.player.stop)
+        self.cec_remote.back_requested.connect(self.handle_back)
         self.cec_remote.navigation.connect(self.window.navigate_remote)
         self.cec_remote.select_requested.connect(self.window.activate_remote_target)
         if self.cec_remote.available():
@@ -472,6 +473,18 @@ class MusicAppController:
             fullscreen.raise_()
             fullscreen.activateWindow()
             self._update_now_playing()
+
+    def handle_back(self):
+        """Back button: exit fullscreen, clear highlight, or go to playlists list."""
+        if self.window.fullscreen_player.isVisible():
+            self.window.fullscreen_player.close()
+            return
+        if self.window._remote_highlighted is not None:
+            self.window.clear_remote_highlight()
+            return
+        if self.current_playlist_id is not None:
+            self.handle_load_playlists()
+            return
 
     def shutdown(self):
         """Stop background work before Qt destroys the application."""

@@ -50,8 +50,21 @@ QPushButton:pressed {
 }
 
 QPushButton[remoteHighlight="true"], QLineEdit[remoteHighlight="true"],
-QSlider[remoteHighlight="true"], QListWidget[remoteHighlight="true"] {
-    border: 2px solid #1ed760;
+QSlider[remoteHighlight="true"], QListWidget[remoteHighlight="true"],
+QComboBox[remoteHighlight="true"] {
+    border: 3px solid #1ed760;
+}
+
+QPushButton[remoteHighlight="true"] {
+    background-color: #1b2a20;
+}
+
+QLineEdit[remoteHighlight="true"] {
+    background-color: #1b2a20;
+}
+
+QComboBox[remoteHighlight="true"] {
+    background-color: #1b2a20;
 }
 
 QListWidget[remoteHighlight="true"] {

@@ -380,17 +380,6 @@ class FullscreenPlayer(QWidget):
             self._register_activity()
         return super().eventFilter(watched, event)
 
-    def register_activity(self):
-        """Public entry point for input that isn't a real QEvent.
-
-        CEC remote presses arrive as plain signal/slot calls from
-        MainWindow.navigate_remote()/activate_remote_target(), so they
-        never pass through our own eventFilter() and never reset the idle
-        timer on their own. Call this whenever a remote button press
-        should count as activity.
-        """
-        self._register_activity()
-
     def _register_activity(self):
         if not self.isVisible():
             return

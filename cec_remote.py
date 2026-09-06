@@ -30,7 +30,8 @@ from PySide6.QtCore import QThread, Signal
 # cec-ctl/v4l-utils versions while the printed spelling isn't guaranteed to
 # be.
 CEC_CODE_ACTIONS = {
-    0x00: "select_requested",   # Select
+    0x00: "select_requested",   # Select / OK
+    0x0D: "back_requested",     # Exit / Back
     0x01: "navigation:up",
     0x02: "navigation:down",
     0x03: "navigation:left",
@@ -59,6 +60,7 @@ class CecRemoteListener(QThread):
     next_track = Signal()
     previous_track = Signal()
     stop_requested = Signal()
+    back_requested = Signal()
     navigation = Signal(str)
     select_requested = Signal()
 
