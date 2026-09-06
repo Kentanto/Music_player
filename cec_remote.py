@@ -48,7 +48,7 @@ class CecRemoteListener(QThread):
 
         try:
             self.process = subprocess.Popen(
-                ["cec-client", "-d", "1"],
+                ["cec-client", "-m", "-d", "1"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
