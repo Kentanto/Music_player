@@ -112,6 +112,7 @@ class MusicAppController:
         self.window.open_playlist_requested.connect(self.handle_open_playlist)
         self.window.volume_changed.connect(self.handle_volume_change)
         self.window.seek_requested.connect(self.handle_seek)
+        self.window.seek_delta_requested.connect(self.handle_seek_delta)
         self.window.fullscreen_requested.connect(self.handle_fullscreen)
 
         fullscreen = self.window.fullscreen_player
@@ -453,6 +454,14 @@ class MusicAppController:
     def handle_seek(self, position):
         """Seek to position (0.0-1.0)"""
         self.player.seek(position)
+
+    def handle_seek_delta(self, seconds):
+        """Move playback by a fixed number of seconds."""
+        duration = self.player.get_duration()
+        if duration <= 0:
+            return
+        position = self.player.get_position() + int(seconds * 1000)
+        self.player.seek(max(0.0, min(position / duration, 1.0)))
 
     def handle_fullscreen(self):
         fullscreen = self.window.fullscreen_player

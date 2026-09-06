@@ -57,6 +57,7 @@ class QueuePanel(QWidget):
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.itemClicked.connect(self.on_item_clicked)
         self.list_widget.itemDoubleClicked.connect(self.on_item_double_clicked)
+        self.list_widget.itemActivated.connect(self.on_item_double_clicked)
         self.list_widget.currentItemChanged.connect(self.on_current_item_changed)
         layout.addWidget(self.list_widget)
         
