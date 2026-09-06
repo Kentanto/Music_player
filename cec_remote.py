@@ -158,6 +158,10 @@ class CecRemoteListener(QThread):
 
         code = int(match.group(1), 16)
         action = CEC_CODE_ACTIONS.get(code)
+        print(
+            f"[CEC] {line.strip()} -> {action or 'ignored'}",
+            flush=True,
+        )
         if action:
             if action.startswith("navigation:"):
                 self.navigation.emit(action.split(":", 1)[1])

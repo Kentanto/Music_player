@@ -178,6 +178,7 @@ class MainWindow(QMainWindow):
         rows = self._navigation_rows()
         targets = [target for row in rows for target in row]
         if not targets:
+            print(f"[REMOTE] {direction}: no navigation targets", flush=True)
             return
 
         current = self._remote_highlighted
@@ -186,12 +187,19 @@ class MainWindow(QMainWindow):
             next_row = row + (1 if direction == "down" else -1)
             if 0 <= next_row < current.count():
                 current.setCurrentRow(next_row)
-                self._remote_clear_timer.start(2500)
+                print(
+                    f"[REMOTE] {direction}: queue item {next_row + 1}/{current.count()}",
+                    flush=True,
+                )
                 return
 
         if current in targets and isinstance(current, QSlider) and direction in {"left", "right"}:
-            self.seek_delta_requested.emit(-5 if direction == "left" else 5)
-            self._remote_clear_timer.start(2500)
+            delta = -5 if direction == "left" else 5
+            print(
+                f"[REMOTE] {direction}: {self._remote_target_name(current)} ({delta:+d}s)",
+                flush=True,
+            )
+            self.seek_delta_requested.emit(delta)
             return
 
         if current not in targets:
@@ -210,12 +218,19 @@ class MainWindow(QMainWindow):
 
         target = rows[row_index][target_index]
         self._remote_target_index = targets.index(target)
+        print(
+            f"[REMOTE] {direction}: {self._remote_target_name(current)} -> "
+            f"{self._remote_target_name(target)}",
+            flush=True,
+        )
         self._set_remote_highlight(target)
 
     def activate_remote_target(self):
         target = self._remote_highlighted
         if target is None:
+            print("[REMOTE] select: no highlighted target", flush=True)
             return
+        print(f"[REMOTE] select: {self._remote_target_name(target)}", flush=True)
         if isinstance(target, QListWidget):
             item = target.currentItem()
             if item:
@@ -243,7 +258,23 @@ class MainWindow(QMainWindow):
         if target is self.queue_panel.list_widget and target.currentRow() < 0 and target.count():
             target.setCurrentRow(0)
         self._refresh_widget_style(target)
-        self._remote_clear_timer.start(2500)
+        self._remote_clear_timer.stop()
+
+    @staticmethod
+    def _remote_target_name(target):
+        if target is None:
+            return "none"
+        if isinstance(target, QListWidget):
+            item = target.currentItem()
+            suffix = f"={item.text()}" if item else ""
+            return f"queue[{target.currentRow()}]{suffix}"
+        if isinstance(target, QAbstractButton):
+            return f"button[{target.text()}]"
+        if isinstance(target, QLineEdit):
+            return "search"
+        if isinstance(target, QSlider):
+            return f"slider[{target.objectName() or 'value'}]"
+        return target.objectName() or target.__class__.__name__
 
     def clear_remote_highlight(self):
         if self._remote_highlighted is None:
