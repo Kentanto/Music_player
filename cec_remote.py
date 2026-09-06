@@ -156,6 +156,17 @@ class CecRemoteListener(QThread):
     def _handle_line(self, line):
         line_stripped = line.strip()
         print(f"[CEC-RAW] {line_stripped}", flush=True)
+
+        # Detect permission error
+        if "monitor mode failed" in line_stripped.lower() or "run this as root" in line_stripped.lower():
+            print(
+                "[CEC] WARNING: cec-ctl needs root permissions for --monitor mode.\n"
+                "[CEC]          Run with: sudo python main.py\n"
+                "[CEC]          Or add user to video group: sudo usermod -aG video $USER",
+                flush=True,
+            )
+            return
+
         match = _UI_CMD_RE.search(line)
         if not match:
             return
