@@ -76,17 +76,6 @@ class QueuePanel(QWidget):
         previous_scroll_value = scroll_bar.value()
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
 
-        # Remember what's currently selected so a rebuild below (which
-        # clears the QListWidget entirely) doesn't silently drop it.
-        # Without this, any background refresh -- a new search, a sort/
-        # filter change, even the periodic "now playing" bold/color
-        # update -- reset currentRow() to -1, and a remote Select press
-        # right after would look like it did nothing at all.
-        current_item_data = self.get_current_item()
-        current_source = None
-        if current_item_data:
-            current_source = current_item_data.get("file_path") or current_item_data.get("url")
-
         filter_text = self.filter_input.text().strip().casefold()
         sort_text = self.sort_combo.currentText()
 
@@ -133,20 +122,10 @@ class QueuePanel(QWidget):
         self.items_data = items
         self.list_widget.clear()
 
-        restore_row = -1
-        for index, item in enumerate(items):
+        for item in items:
             list_item = QListWidgetItem()
             self._update_list_item(list_item, item)
             self.list_widget.addItem(list_item)
-            if restore_row == -1 and current_source is not None:
-                item_source = item.get("file_path") or item.get("url")
-                if item_source is not None and str(item_source) == str(current_source):
-                    restore_row = index
-
-        if restore_row >= 0:
-            self.list_widget.blockSignals(True)
-            self.list_widget.setCurrentRow(restore_row)
-            self.list_widget.blockSignals(False)
 
         if was_at_bottom:
             scroll_bar.setValue(scroll_bar.maximum())

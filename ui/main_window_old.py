@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QShortcut, QKeySequence
+from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence
 
 
 
@@ -47,15 +47,6 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self._selected_queue_item = None
         self.connect_signals()
-
-        # Keep our own remote-highlight bookkeeping in sync with *real* Qt
-        # keyboard focus, however that focus got there (mouse click, Tab,
-        # a dialog closing, etc). Without this, clicking something with the
-        # mouse leaves `_remote_highlighted` pointing at whatever the remote
-        # last selected, so the next remote button press appears to do
-        # nothing to the thing you can see is focused.
-        self._syncing_focus = False
-        QApplication.instance().focusChanged.connect(self._on_app_focus_changed)
     
     def init_ui(self):
         """Initialize the main UI"""
@@ -184,14 +175,6 @@ class MainWindow(QMainWindow):
         return [target for row in self._navigation_rows() for target in row]
 
     def navigate_remote(self, direction):
-        # CEC button presses arrive as plain Python signal calls, not real
-        # QEvents, so FullscreenPlayer's own activity-detecting event
-        # filter never sees them and the view can be stuck idle (with only
-        # the eq seek bar navigable) even while you're actively mashing
-        # the remote. Tell it explicitly that something happened.
-        if self.fullscreen_player.isVisible():
-            self.fullscreen_player.register_activity()
-
         rows = self._navigation_rows()
         targets = [target for row in rows for target in row]
         if not targets:
@@ -243,9 +226,6 @@ class MainWindow(QMainWindow):
         self._set_remote_highlight(target)
 
     def activate_remote_target(self):
-        if self.fullscreen_player.isVisible():
-            self.fullscreen_player.register_activity()
-
         target = self._remote_highlighted
         if target is None:
             print("[REMOTE] select: no highlighted target", flush=True)
@@ -253,26 +233,20 @@ class MainWindow(QMainWindow):
         print(f"[REMOTE] select: {self._remote_target_name(target)}", flush=True)
         if isinstance(target, QListWidget):
             item = target.currentItem()
-            if item is None and target.count():
-                # The list gets cleared and rebuilt on every filter/sort/
-                # search refresh (see QueuePanel._refresh_display), which
-                # used to silently drop the current row. Without this,
-                # Select on a freshly-refreshed list did nothing at all.
-                target.setCurrentRow(0)
-                item = target.currentItem()
             if item:
                 item.setSelected(True)
                 target.itemActivated.emit(item)
         elif isinstance(target, QAbstractButton):
             target.click()
         elif isinstance(target, QLineEdit):
-            target.returnPressed.emit()
+            event = QKeyEvent(
+                QKeyEvent.Type.KeyPress,
+                Qt.Key_Return,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            QApplication.postEvent(target, event)
         elif isinstance(target, QSlider):
-            # Sliders are intentionally never given real keyboard focus
-            # (see _set_remote_highlight) so there's nothing useful to do
-            # here; seeking is already handled by navigate_remote's
-            # left/right delta logic while a slider is highlighted.
-            pass
+            target.setFocus(Qt.OtherFocusReason)
 
     def _set_remote_highlight(self, target):
         if self._remote_highlighted is not None:
@@ -280,43 +254,11 @@ class MainWindow(QMainWindow):
             self._refresh_widget_style(self._remote_highlighted)
         self._remote_highlighted = target
         target.setProperty("remoteHighlight", True)
-
-        # Sliders are the one widget type that treats every arrow key
-        # (up/down/left/right) as "change my value" the instant they hold
-        # real keyboard focus (QAbstractSlider's default keyPressEvent).
-        # We already drive seeking ourselves from navigate_remote(), so
-        # handing a slider real OS focus only creates a second, competing
-        # path that can hijack Up/Down presses into scrubbing instead of
-        # moving the highlight. Give every other widget type real focus
-        # (buttons need it to look right, line edits need it to accept
-        # typing, the list needs it for its own selection styling) but
-        # leave sliders as a purely visual highlight.
-        if not isinstance(target, QSlider):
-            self._syncing_focus = True
-            try:
-                target.setFocus(Qt.OtherFocusReason)
-            finally:
-                self._syncing_focus = False
-
+        target.setFocus(Qt.OtherFocusReason)
         if target is self.queue_panel.list_widget and target.currentRow() < 0 and target.count():
             target.setCurrentRow(0)
         self._refresh_widget_style(target)
         self._remote_clear_timer.stop()
-
-    def _on_app_focus_changed(self, old, new):
-        """Mirror real Qt focus changes into our remote-highlight state.
-
-        Fires for mouse clicks, Tab, dialogs closing -- anything that
-        moves focus, not just our own navigate_remote() calls. Keeps the
-        remote's idea of "where you are" from getting stuck on whatever
-        it last highlighted while you've actually clicked somewhere else.
-        """
-        if self._syncing_focus or new is None or new is self._remote_highlighted:
-            return
-
-        targets = [target for row in self._navigation_rows() for target in row]
-        if new in targets:
-            self._set_remote_highlight(new)
 
     @staticmethod
     def _remote_target_name(target):
