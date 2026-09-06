@@ -117,6 +117,16 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.prev_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.play_pause_track.emit)
 
+    # ───────────────────── Layer-2 interaction state ─────────────────────
+
+    @property
+    def _slider_adjust_target(self):
+        return getattr(self, "__slider_adjust_target", None)
+
+    @_slider_adjust_target.setter
+    def _slider_adjust_target(self, value):
+        object.__setattr__(self, "__slider_adjust_target", value)
+
     # ───────────────────── Event filter installation ─────────────────────
 
     def _install_nav_filters(self):
@@ -128,14 +138,16 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.FocusIn:
             target = self._find_nav_target_for_widget(watched)
             if target and target is not self._remote_highlighted:
-                if self._remote_highlighted is not None and not self._is_fullscreen_nav():
+                # Always update internal tracking
+                if self._remote_highlighted is not None and self._should_highlight(self._remote_highlighted):
                     self._remote_highlighted.setProperty("remoteHighlight", False)
                     self._refresh_widget_style(self._remote_highlighted)
                 self._remote_highlighted = target
-                if not self._is_fullscreen_nav():
+                # Only show green border when appropriate
+                if self._should_highlight(target):
                     target.setProperty("remoteHighlight", True)
                     self._refresh_widget_style(target)
-                self._remote_clear_timer.start()
+                    self._remote_clear_timer.start()
             return super().eventFilter(watched, event)
 
         if event.type() == QEvent.Type.KeyPress:
@@ -144,15 +156,35 @@ class MainWindow(QMainWindow):
             if target is None:
                 return super().eventFilter(watched, event)
 
-            # ── Return / Space = activate (always) ──
+            # ── Layer check: slider adjust mode ──
+            if isinstance(target, QSlider) and self._slider_adjust_target is target:
+                if key in (Qt.Key_Left, Qt.Key_Right):
+                    self._adjust_slider(target, "left" if key == Qt.Key_Left else "right")
+                    return True
+                # Any other key exits slider adjust mode
+                self._exit_slider_adjust(target)
+                if key in (Qt.Key_Up, Qt.Key_Down):
+                    pass  # fall through to spatial navigation below
+                else:
+                    # Enter/Space/Escape: consumed, do nothing else
+                    return True
+
+            # ── QComboBox popup open: let Qt handle arrows ──
+            if isinstance(target, QComboBox) and target.view().isVisible():
+                if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+                    target.hidePopup()
+                    return True
+                return super().eventFilter(watched, event)
+
+            # ── Layer 2 enter: Return / Space / Enter = activate ──
             if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
                 if isinstance(target, QLineEdit) and key == Qt.Key_Space:
-                    # Let space type in search/filter fields
                     return super().eventFilter(watched, event)
+                print(f"[NAV] key event: {key} on {self._target_name(target)} -> activate", flush=True)
                 self.activate_highlighted()
                 return True
 
-            # ── QLineEdit: only navigate when cursor is at edge ──
+            # ── QLineEdit: cursor-edge awareness ──
             if isinstance(target, QLineEdit):
                 if key == Qt.Key_Left:
                     if target.cursorPosition() == 0:
@@ -168,21 +200,7 @@ class MainWindow(QMainWindow):
                     self.navigate("up" if key == Qt.Key_Up else "down")
                     return True
 
-            # ── QComboBox: only navigate when not open ──
-            if isinstance(target, QComboBox):
-                if target.view().isVisible():
-                    # Combo popup is open — only intercept Return/Space, not arrows
-                    return super().eventFilter(watched, event)
-                if key in (Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down):
-                    self.navigate(
-                        "left" if key == Qt.Key_Left
-                        else "right" if key == Qt.Key_Right
-                        else "up" if key == Qt.Key_Up
-                        else "down"
-                    )
-                    return True
-
-            # ── Everything else: always navigate ──
+            # ── Layer 1 spatial navigation ──
             if key == Qt.Key_Up:
                 self.navigate("up")
                 return True
@@ -197,6 +215,23 @@ class MainWindow(QMainWindow):
                 return True
 
         return super().eventFilter(watched, event)
+
+    def _should_highlight(self, target):
+        """Return whether a target should get the green highlight border."""
+        if self.fullscreen_player.isVisible():
+            return False
+        return True
+    
+    def _adjust_slider(self, slider, direction):
+        if slider is self.player_bar.volume_slider or slider is self.fullscreen_player.volume_slider:
+            delta = -5 if direction == "left" else 5
+            new_val = max(0, min(100, slider.value() + delta))
+            slider.setValue(new_val)
+            print(f"[NAV] {direction}: volume {new_val}", flush=True)
+        else:
+            delta = -5 if direction == "left" else 5
+            print(f"[NAV] {direction}: seek {delta:+d}s", flush=True)
+            self.seek_delta_requested.emit(delta)
 
     def _find_nav_target_for_widget(self, widget):
         if not isinstance(widget, QWidget):
@@ -283,10 +318,35 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(event)
 
+    def on_return_pressed(self):
+        """Return/Back key pressed — exit any active mode, then clear highlight."""
+        # Exit slider adjust mode if active
+        if self._slider_adjust_target is not None:
+            self._slider_adjust_target.setProperty("remoteHighlight", False)
+            self._refresh_widget_style(self._slider_adjust_target)
+            self._slider_adjust_target = None
+            self._remote_highlighted = None
+            print("[NAV] Return: exited slider adjust mode", flush=True)
+            return
+        # If a combo popup is open, close it
+        if isinstance(self._remote_highlighted, QComboBox):
+            self._remote_highlighted.hidePopup()
+            return
+        # Default: clear highlight
+        self.clear_remote_highlight()
+
     # ───────────────────── Shared navigation engine ──────────────────────
 
     def navigate_remote(self, direction):
         self.navigate(direction)
+
+    def _exit_slider_adjust(self, slider):
+        if self._slider_adjust_target is slider:
+            self._slider_adjust_target = None
+            self._remote_highlighted = None
+            slider.setProperty("remoteHighlight", False)
+            self._refresh_widget_style(slider)
+            print("[NAV] exited slider adjust mode", flush=True)
 
     def navigate(self, direction):
         targets = self._navigation_targets()
@@ -294,7 +354,7 @@ class MainWindow(QMainWindow):
             return
 
         # Resolve the effective "current" widget
-        current = self._remote_highlighted
+        current = self._slider_adjust_target or self._remote_highlighted
         if current not in targets:
             focused = QApplication.focusWidget()
             if focused:
@@ -304,17 +364,17 @@ class MainWindow(QMainWindow):
                         break
 
         if current not in targets:
-            # Nothing active yet — start on the queue (most useful default)
-            default = self.queue_panel.list_widget
-            if default.count():
-                print(f"[NAV] {direction}: auto-start -> queue", flush=True)
-                self._set_highlight(default)
-            else:
-                print(f"[NAV] {direction}: auto-start -> {self._target_name(targets[0])}", flush=True)
-                self._set_highlight(targets[0])
+            # Auto-start: queue, then sidebar, then first target
+            for default in (self.queue_panel.list_widget,
+                           self.sidebar.playlists_btn,
+                           targets[0] if targets else None):
+                if default is not None and default in targets:
+                    print(f"[NAV] {direction}: auto-start -> {self._target_name(default)}", flush=True)
+                    self._set_highlight(default, from_navigate=True)
+                    return
             return
 
-        # ── Queue: up / down scrolls items, at edges leaves the widget ──
+        # ── Queue: up/down scrolls items, at edges leaves ──
         if isinstance(current, QListWidget) and direction in {"up", "down"}:
             row = current.currentRow()
             if row < 0 and current.count():
@@ -329,30 +389,7 @@ class MainWindow(QMainWindow):
                 self._remote_clear_timer.start()
                 return
 
-        # ── Slider: left / right adjusts value ──
-        if isinstance(current, QSlider) and direction in {"left", "right"}:
-            is_vol = current is self.player_bar.volume_slider or current is self.fullscreen_player.volume_slider
-            delta = -5 if direction == "left" else 5
-            if is_vol:
-                new_val = max(0, min(100, current.value() + delta))
-                current.setValue(new_val)
-                print(f"[NAV] {direction}: volume {new_val}", flush=True)
-            else:
-                print(f"[NAV] {direction}: seek {delta:+d}s", flush=True)
-                self.seek_delta_requested.emit(delta)
-            self._remote_clear_timer.start()
-            return
-
-        # ── ComboBox: left / right changes index ──
-        if isinstance(current, QComboBox) and direction in {"left", "right"}:
-            idx = current.currentIndex()
-            new_idx = idx + (1 if direction == "right" else -1)
-            if 0 <= new_idx < current.count():
-                current.setCurrentIndex(new_idx)
-            self._remote_clear_timer.start()
-            return
-
-        # ── Fullscreen: use explicit row grid (spatial math breaks on overlays) ──
+        # ── Fullscreen: use explicit row grid ──
         if self._is_fullscreen_nav():
             target = self._fullscreen_grid_navigate(current, direction)
             if target:
@@ -360,7 +397,7 @@ class MainWindow(QMainWindow):
                     f"[NAV] {direction}: {self._target_name(current)} -> {self._target_name(target)}",
                     flush=True,
                 )
-                self._set_highlight(target)
+                self._set_highlight(target, from_navigate=True)
             return
 
         # ── Normal mode: spatial navigation ──
@@ -375,7 +412,7 @@ class MainWindow(QMainWindow):
                 f"[NAV] {direction}: {self._target_name(current)} -> {self._target_name(target)}",
                 flush=True,
             )
-            self._set_highlight(target)
+            self._set_highlight(target, from_navigate=True)
 
     def _fullscreen_grid_navigate(self, current, direction):
         """Predictable row/column grid for fullscreen controls."""
@@ -524,24 +561,42 @@ class MainWindow(QMainWindow):
             target = self.queue_panel.list_widget
             if target.count():
                 self._set_highlight(target)
+                item = self.queue_panel.get_current_item()
+                if item:
+                    if item.get("type") == "playlist":
+                        self.open_playlist_requested.emit(item.get("playlist_id"))
+                    else:
+                        self.play_track_index.emit(item)
             return
 
         print(f"[NAV] select: {self._target_name(target)}", flush=True)
 
         if isinstance(target, QListWidget):
-            item = target.currentItem()
+            item = self.queue_panel.get_current_item()
             if item:
-                item.setSelected(True)
-                target.itemActivated.emit(item)
+                if item.get("type") == "playlist":
+                    self.open_playlist_requested.emit(item.get("playlist_id"))
+                else:
+                    self.play_track_index.emit(item)
+
         elif isinstance(target, QAbstractButton):
             target.animateClick()
+
         elif isinstance(target, QLineEdit):
             target.setFocus(Qt.OtherFocusReason)
             target.selectAll()
+
         elif isinstance(target, QSlider):
-            target.setFocus(Qt.OtherFocusReason)
+            # Layer 2: enter slider adjust mode
+            self._slider_adjust_target = target
+            if self._should_highlight(target):
+                target.setProperty("remoteHighlight", True)
+                self._refresh_widget_style(target)
+            print("[NAV] entered slider adjust mode", flush=True)
+
         elif isinstance(target, QComboBox):
             target.showPopup()
+
         elif target is self.cover_widget:
             self.fullscreen_requested.emit()
 
@@ -549,16 +604,19 @@ class MainWindow(QMainWindow):
 
     # ───────────────────── Highlight helpers ─────────────────────────────
 
-    def _set_highlight(self, target):
-        if self._remote_highlighted is not None:
+    def _set_highlight(self, target, *, from_navigate=False):
+        # If coming from spatial navigation and we're in slider adjust mode, exit it
+        if from_navigate and self._slider_adjust_target is not None:
+            self._exit_slider_adjust(self._slider_adjust_target)
+        
+        if self._remote_highlighted is not None and self._should_highlight(self._remote_highlighted):
             self._remote_highlighted.setProperty("remoteHighlight", False)
-            if not self._is_fullscreen_nav():
-                self._refresh_widget_style(self._remote_highlighted)
+            self._refresh_widget_style(self._remote_highlighted)
 
         self._remote_highlighted = target
         target.setFocus(Qt.OtherFocusReason)
 
-        if not self._is_fullscreen_nav():
+        if self._should_highlight(target):
             target.setProperty("remoteHighlight", True)
             self._refresh_widget_style(target)
 

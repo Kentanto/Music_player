@@ -154,6 +154,8 @@ class CecRemoteListener(QThread):
                 self.process = None
 
     def _handle_line(self, line):
+        line_stripped = line.strip()
+        print(f"[CEC-RAW] {line_stripped}", flush=True)
         match = _UI_CMD_RE.search(line)
         if not match:
             return
@@ -161,13 +163,15 @@ class CecRemoteListener(QThread):
         code = int(match.group(1), 16)
         action = CEC_CODE_ACTIONS.get(code)
         print(
-            f"[CEC] {line.strip()} -> {action or 'ignored'}",
+            f"[CEC] parsed code=0x{code:02X} action={action or 'ignored'}",
             flush=True,
         )
         if action:
             if action.startswith("navigation:"):
+                print(f"[CEC-EMIT] navigation('{action.split(':', 1)[1]}')", flush=True)
                 self.navigation.emit(action.split(":", 1)[1])
             else:
+                print(f"[CEC-EMIT] {action}()", flush=True)
                 getattr(self, action).emit()
 
     def stop(self):

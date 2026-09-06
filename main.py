@@ -479,10 +479,11 @@ class MusicAppController:
         if self.window.fullscreen_player.isVisible():
             self.window.fullscreen_player.close()
             return
-        if self.window._remote_highlighted is not None:
-            self.window.clear_remote_highlight()
-            return
-        if self.current_playlist_id is not None:
+        # Return/Back: exit layer-2 modes first, fall through to playlist navigation
+        self.window.on_return_pressed()
+        # If no layer-2 mode was active, on_return_pressed cleared highlight but
+        # didn't change view — fall through to playlist navigation
+        if self.window._remote_highlighted is None and self.current_playlist_id is not None:
             self.handle_load_playlists()
             return
 
