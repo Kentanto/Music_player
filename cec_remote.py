@@ -17,6 +17,7 @@ explicitly:
 """
 
 import glob
+import os
 import re
 import shutil
 import subprocess
@@ -77,6 +78,7 @@ class CecRemoteListener(QThread):
         self._device = device
         self._phys_addr = phys_addr
         self.process = None
+        self._use_sudo = False
 
     @staticmethod
     def available():
@@ -84,28 +86,45 @@ class CecRemoteListener(QThread):
         return shutil.which("cec-ctl") is not None and shutil.which("stdbuf") is not None
 
     @staticmethod
-    def find_connected_device():
+    def _sudo_available():
+        return shutil.which("sudo") is not None
+
+    def _query_device(self, dev, use_sudo=False):
+        """Run `cec-ctl -d{dev} -S`, optionally with sudo."""
+        cmd = (["sudo", "-n"] if use_sudo else []) + ["cec-ctl", f"-d{dev}", "-S"]
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return result
+
+    def find_connected_device(self):
         """Return the first /dev/cecN that reports a real physical address.
 
-        Raspberry Pi 5 (and some other boards) expose one /dev/cecN per
-        HDMI output, but only the one that's actually plugged in and has
-        successfully parsed the TV's EDID will report a valid physical
-        address -- the others sit at "f.f.f.f" forever. Returns None if
-        none are found (or cec-ctl isn't installed).
+        Tries plain cec-ctl first, then sudo -n cec-ctl if permission denied.
         """
         if not shutil.which("cec-ctl"):
             return None
+        can_sudo = self._sudo_available()
         for dev in sorted(glob.glob("/dev/cec*")):
-            try:
-                result = subprocess.run(
-                    ["cec-ctl", f"-d{dev}", "-S"],
-                    capture_output=True, text=True, timeout=5,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                continue
-            match = _PHYS_ADDR_RE.search(result.stdout)
-            if match and match.group(1).lower() != "f.f.f.f":
-                return dev, match.group(1)
+            for use_sudo in (False, True):
+                if use_sudo and not can_sudo:
+                    continue
+                result = self._query_device(dev, use_sudo=use_sudo)
+                if result is None:
+                    continue
+                match = _PHYS_ADDR_RE.search(result.stdout)
+                if match and match.group(1).lower() != "f.f.f.f":
+                    if use_sudo:
+                        self._use_sudo = True
+                        print(
+                            f"[CEC] {dev} needs sudo; only cec-ctl will run elevated.",
+                            flush=True,
+                        )
+                    return dev, match.group(1)
         return None
 
     def run(self):
@@ -121,13 +140,31 @@ class CecRemoteListener(QThread):
             device = device or found[0]
             phys_addr = phys_addr or found[1]
 
-        cmd = [
-            "stdbuf", "-oL", "-eL",
-            "cec-ctl", f"-d{device}",
-            "--playback",
-            "--to", "0", "--active-source", f"phys-addr={phys_addr}",
-            "--monitor",
-        ]
+        # Build cec-ctl command, with or without sudo depending on what worked
+        cec_cmd = ["cec-ctl", f"-d{device}",
+                   "--playback",
+                   "--to", "0", "--active-source", f"phys-addr={phys_addr}",
+                   "--monitor"]
+
+        if self._use_sudo:
+            # Sanity check: confirm sudo -n works non-interactively
+            test = subprocess.run(
+                ["sudo", "-n", "cec-ctl", f"-d{device}", "-S"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if test.returncode != 0 and ("password" in test.stderr.lower()
+                                          or "password" in test.stdout.lower()):
+                print(
+                    "[CEC] ERROR: cec-ctl needs sudo but 'sudo -n cec-ctl' is asking for a password.\n"
+                    "[CEC] Add this line to /etc/sudoers (use visudo):\n"
+                    f"[CEC]   {os.getlogin()} ALL=(ALL) NOPASSWD: /usr/bin/cec-ctl, /usr/bin/stdbuf\n"
+                    "[CEC] Then restart the app.",
+                    flush=True,
+                )
+                return
+            cec_cmd = ["sudo", "-n"] + cec_cmd
+
+        cmd = ["stdbuf", "-oL", "-eL"] + cec_cmd
 
         try:
             self.process = subprocess.Popen(
@@ -157,12 +194,13 @@ class CecRemoteListener(QThread):
         line_stripped = line.strip()
         print(f"[CEC-RAW] {line_stripped}", flush=True)
 
-        # Detect permission error
+        # Detect permission error (fallback if auto-detection missed it)
         if "monitor mode failed" in line_stripped.lower() or "run this as root" in line_stripped.lower():
             print(
                 "[CEC] WARNING: cec-ctl needs root permissions for --monitor mode.\n"
-                "[CEC]          Run with: sudo python main.py\n"
-                "[CEC]          Or add user to video group: sudo usermod -aG video $USER",
+                "[CEC]          Run the app normally and add this line to /etc/sudoers:\n"
+                f"[CEC]          {os.getlogin()} ALL=(ALL) NOPASSWD: /usr/bin/cec-ctl, /usr/bin/stdbuf\n"
+                "[CEC]          Then restart the app.",
                 flush=True,
             )
             return
