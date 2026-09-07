@@ -27,7 +27,6 @@ class MetadataFetcher(QThread):
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
-            "ffmpeg_location": FFMPEG_LOCATION,
             **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
         }
         

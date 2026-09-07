@@ -16,6 +16,7 @@ explicitly:
    output at all until its internal buffer fills or the process exits.
 """
 
+import getpass
 import glob
 import os
 import re
@@ -89,13 +90,23 @@ class CecRemoteListener(QThread):
     def _sudo_available():
         return shutil.which("sudo") is not None
 
-    def _query_device(self, dev, use_sudo=False):
-        """Run `cec-ctl -d{dev} -S`, optionally with sudo."""
-        cmd = (["sudo", "-n"] if use_sudo else []) + ["cec-ctl", f"-d{dev}", "-S"]
+    @staticmethod
+    def _pkexec_available():
+        return shutil.which("pkexec") is not None
+
+    def _query_device(self, dev, method="plain"):
+        """Run `cec-ctl -d{dev} -S` with plain, sudo, or pkexec elevation."""
+        base = ["cec-ctl", f"-d{dev}", "-S"]
+        if method == "sudo":
+            cmd = ["sudo", "-n"] + base
+        elif method == "pkexec":
+            cmd = ["pkexec"] + base
+        else:
+            cmd = base
         try:
             result = subprocess.run(
                 cmd,
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=15,
             )
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -104,24 +115,33 @@ class CecRemoteListener(QThread):
     def find_connected_device(self):
         """Return the first /dev/cecN that reports a real physical address.
 
-        Tries plain cec-ctl first, then sudo -n cec-ctl if permission denied.
+        Tries plain cec-ctl first, then sudo -n, then pkexec.
         """
         if not shutil.which("cec-ctl"):
             return None
         can_sudo = self._sudo_available()
+        can_pkexec = self._pkexec_available()
         for dev in sorted(glob.glob("/dev/cec*")):
-            for use_sudo in (False, True):
-                if use_sudo and not can_sudo:
+            for method in ("plain", "sudo", "pkexec"):
+                if method == "sudo" and not can_sudo:
                     continue
-                result = self._query_device(dev, use_sudo=use_sudo)
+                if method == "pkexec" and not can_pkexec:
+                    continue
+                result = self._query_device(dev, method=method)
                 if result is None:
                     continue
                 match = _PHYS_ADDR_RE.search(result.stdout)
                 if match and match.group(1).lower() != "f.f.f.f":
-                    if use_sudo:
+                    if method == "sudo":
                         self._use_sudo = True
                         print(
-                            f"[CEC] {dev} needs sudo; only cec-ctl will run elevated.",
+                            f"[CEC] {dev} needs sudo; cec-ctl will run with sudo.",
+                            flush=True,
+                        )
+                    elif method == "pkexec":
+                        self._use_sudo = "pkexec"
+                        print(
+                            f"[CEC] {dev} needs elevation; cec-ctl will run with pkexec.",
                             flush=True,
                         )
                     return dev, match.group(1)
@@ -140,13 +160,18 @@ class CecRemoteListener(QThread):
             device = device or found[0]
             phys_addr = phys_addr or found[1]
 
-        # Build cec-ctl command, with or without sudo depending on what worked
+        # Resolve exact binary paths for helpful error messages
+        cec_ctl_path = shutil.which("cec-ctl") or "/usr/bin/cec-ctl"
+        stdbuf_path = shutil.which("stdbuf") or "/usr/bin/stdbuf"
+        who = getpass.getuser()
+
+        # Build cec-ctl command, with or without elevation depending on what worked
         cec_cmd = ["cec-ctl", f"-d{device}",
                    "--playback",
                    "--to", "0", "--active-source", f"phys-addr={phys_addr}",
                    "--monitor"]
 
-        if self._use_sudo:
+        if self._use_sudo is True:
             # Sanity check: confirm sudo -n works non-interactively
             test = subprocess.run(
                 ["sudo", "-n", "cec-ctl", f"-d{device}", "-S"],
@@ -155,16 +180,19 @@ class CecRemoteListener(QThread):
             if test.returncode != 0 and ("password" in test.stderr.lower()
                                           or "password" in test.stdout.lower()):
                 print(
-                    "[CEC] ERROR: cec-ctl needs sudo but 'sudo -n cec-ctl' is asking for a password.\n"
-                    "[CEC] Add this line to /etc/sudoers (use visudo):\n"
-                    f"[CEC]   {os.getlogin()} ALL=(ALL) NOPASSWD: /usr/bin/cec-ctl, /usr/bin/stdbuf\n"
+                    "[CEC] ERROR: cec-ctl needs sudo but 'sudo -n cec-ctl' asks for a password.\n"
+                    "[CEC] Either add this line to /etc/sudoers (use visudo):\n"
+                    f"[CEC]   {who} ALL=(ALL) NOPASSWD: {cec_ctl_path}, {stdbuf_path}\n"
+                    "[CEC] Or install pkexec (polkit) for an automatic prompt.\n"
                     "[CEC] Then restart the app.",
                     flush=True,
                 )
                 return
             cec_cmd = ["sudo", "-n"] + cec_cmd
+        elif self._use_sudo == "pkexec":
+            cec_cmd = ["pkexec"] + cec_cmd
 
-        cmd = ["stdbuf", "-oL", "-eL"] + cec_cmd
+        cmd = [stdbuf_path, "-oL", "-eL"] + cec_cmd
 
         try:
             self.process = subprocess.Popen(
@@ -195,11 +223,18 @@ class CecRemoteListener(QThread):
         print(f"[CEC-RAW] {line_stripped}", flush=True)
 
         # Detect permission error (fallback if auto-detection missed it)
-        if "monitor mode failed" in line_stripped.lower() or "run this as root" in line_stripped.lower():
+        low = line_stripped.lower()
+        if "monitor mode failed" in low or "run this as root" in low or "permission denied" in low:
+            cec_ctl_path = shutil.which("cec-ctl") or "/usr/bin/cec-ctl"
+            stdbuf_path = shutil.which("stdbuf") or "/usr/bin/stdbuf"
+            who = getpass.getuser()
             print(
                 "[CEC] WARNING: cec-ctl needs root permissions for --monitor mode.\n"
-                "[CEC]          Run the app normally and add this line to /etc/sudoers:\n"
-                f"[CEC]          {os.getlogin()} ALL=(ALL) NOPASSWD: /usr/bin/cec-ctl, /usr/bin/stdbuf\n"
+                "[CEC]          Options (pick one):\n"
+                "[CEC]          1) Install pkexec so the app can auto-elevate just cec-ctl.\n"
+                "[CEC]          2) Add this to /etc/sudoers (use visudo):\n"
+                f"[CEC]             {who} ALL=(ALL) NOPASSWD: {cec_ctl_path}, {stdbuf_path}\n"
+                "[CEC]          3) Create a udev rule so your user can access /dev/cec*.\n"
                 "[CEC]          Then restart the app.",
                 flush=True,
             )

@@ -145,22 +145,16 @@ class MusicAppController:
     def handle_play(self):
         """Play current track selection or resume if paused"""
 
-        try:
-            if self.player.get_duration() > 0:
-                self.player.resume()
-                self._update_now_playing()
-                return
+        if self.player.get_duration() > 0:
+            self.player.resume()
+            self._update_now_playing()
+            return
 
-            item = self.window.queue_panel.get_current_item()
-            if not item:
-                return
+        item = self.window.queue_panel.get_current_item()
+        if not item:
+            return
 
-            self.handle_play_item(item)
-
-        except Exception:
-            item = self.window.queue_panel.get_current_item()
-            if item:
-                self.handle_play_item(item)
+        self.handle_play_item(item)
     
     def handle_play_item(self, item):
         """Play a track from a dict item (shuffle-safe, index-free)"""

@@ -642,6 +642,9 @@ def download_audio_to_folder(url, title, folder):
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+            if not info:
+                print("[audio-download] failed: no info returned", flush=True)
+                return None
             duration = info.get("duration", 0)
             if duration and duration > 600:
                 print(f"[audio-download] rejected: duration={duration}s", flush=True)
