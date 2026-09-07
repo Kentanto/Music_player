@@ -43,8 +43,10 @@ class Player:
         self._ordered_queue = []
         self._current_item = None
         self._shuffle_order = []
-        self._priority_queue = []
-        self._end_signal_pending = False
+        self._shuffle_seed = None
+        self._play_generation = 0
+        # Sources manually queued to play after the current track
+        self._next_sources = []
 
         # start at a safe default volume and use a smooth curve for perception
         self.volume = 30
@@ -60,7 +62,7 @@ class Player:
 
     # ---------- core playback ----------
     def play_url(self, url):
-        self._end_signal_pending = False
+        self._play_generation += 1
         # If the URL is already a local file path, play it directly.
         if isinstance(url, str) and os.path.exists(url):
             self.player.setSource(QUrl.fromLocalFile(url))
@@ -94,7 +96,6 @@ class Player:
     # ---------- queue system ----------
     def set_queue(self, urls, current_item=None):
         new_base_queue = list(urls)
-        queue_changed = self._base_queue != new_base_queue
         self._base_queue = new_base_queue
 
         if current_item is not None:
@@ -102,79 +103,80 @@ class Player:
         elif self._current_item not in self._base_queue:
             self._current_item = self._base_queue[0] if self._base_queue else None
 
-        if self.shuffle_enabled and self._base_queue:
-            if queue_changed:
-                old_order = [url for url in self._shuffle_order if url in self._base_queue]
-                if old_order:
-                    merged_order = list(old_order)
-                    for position, url in enumerate(self._base_queue):
-                        if url in old_order:
-                            continue
-                        old_before = sum(
-                            1 for previous in self._base_queue[:position] if previous in old_order
-                        )
-                        new_before = sum(
-                            1 for previous in self._base_queue[:position] if previous not in old_order
-                        )
-                        merged_order.insert(old_before + new_before, url)
-                    self._shuffle_order = merged_order
-                else:
-                    self._apply_shuffle(current_item=self._current_item)
-            elif not self._shuffle_order:
-                self._apply_shuffle(current_item=self._current_item)
+        # Clean up orphaned next-sources (keep queued-next duplicates of current track)
+        self._next_sources = [s for s in self._next_sources if s in self._base_queue]
 
-            self._ordered_queue = list(self._shuffle_order)
-            self.queue = list(self._shuffle_order)
-            if self._current_item in self.queue:
-                self.index = self.queue.index(self._current_item)
-            elif self.queue:
-                self.index = 0
-            else:
-                self.index = -1
-            self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
+        if self.shuffle_enabled and self._base_queue:
+            self._apply_shuffle(current_item=self._current_item, preserve_existing=True)
         else:
-            self.queue = list(self._base_queue)
+            self._shuffle_order = []
             self._ordered_queue = list(self._base_queue)
+            self.queue = list(self._base_queue)
             if self._current_item in self._base_queue:
                 self.index = self._base_queue.index(self._current_item)
             else:
                 self.index = 0
             self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
 
-        self._priority_queue = [url for url in self._priority_queue if url in self.queue and url != self._current_item]
-        self._insert_priority_queue()
+        self._restore_next_sources()
 
-    def _insert_priority_queue(self):
-        if not self._priority_queue or self._current_item not in self.queue:
+    def _restore_next_sources(self):
+        """Re-insert queued-next sources immediately after the current track."""
+        if not self._next_sources:
+            return
+        self._next_sources = [s for s in self._next_sources if s in self.queue]
+        if not self._next_sources:
             return
 
-        self.queue = [url for url in self.queue if url not in self._priority_queue]
-        self.index = self.queue.index(self._current_item)
+        # Ensure index/current_item are valid before we slice the queue
+        if self._current_item in self.queue:
+            self.index = self.queue.index(self._current_item)
+        elif self.queue:
+            self.index = 0
+            self._current_item = self.queue[0]
+        else:
+            self.index = -1
+            self._current_item = None
+            return
+
+        # Only strip duplicates from AFTER the current position so the
+        # currently-playing track is never removed.
         insert_at = self.index + 1
-        self.queue[insert_at:insert_at] = self._priority_queue
+        tail = [u for u in self.queue[insert_at:] if u not in self._next_sources]
+        self.queue = self.queue[:insert_at] + tail
+
+        for src in self._next_sources:
+            self.queue.insert(insert_at, src)
+            insert_at += 1
 
     def queue_next(self, source):
-        """Place a track in the FIFO priority queue after the current track."""
-        if not source or source == self._current_item:
+        """Place source immediately after the current track."""
+        if not source:
             return
-
-        self._priority_queue = [url for url in self._priority_queue if url != source]
-        self._priority_queue.append(source)
-        if source not in self.queue:
-            self.queue.append(source)
-        self._insert_priority_queue()
+        if source not in self._base_queue:
+            self._base_queue.append(source)
+        # Allow the same song to be queued multiple times
+        self._next_sources.append(source)
+        self._restore_next_sources()
 
     def next(self):
-        if self._current_item in self._priority_queue:
-            self._priority_queue.remove(self._current_item)
-        if self.index + 1 < len(self.queue):
-            self.index += 1
-            self.play()
+        self._advance()
 
     def previous(self):
-        if self.index - 1 >= 0:
+        if self.index > 0:
             self.index -= 1
+            self._current_item = self.queue[self.index]
             self.play()
+
+    def _advance(self):
+        """Advance to the next track and clean up played queued-next sources."""
+        if not self.queue or self.index + 1 >= len(self.queue):
+            return
+        self.index += 1
+        self._current_item = self.queue[self.index]
+        if self._current_item in self._next_sources:
+            self._next_sources.remove(self._current_item)
+        self.play()
 
     def toggle_shuffle(self, enabled=None):
         if enabled is None:
@@ -182,52 +184,66 @@ class Player:
 
         self.shuffle_enabled = bool(enabled)
         if self.shuffle_enabled and self._base_queue:
-            if not self._shuffle_order:
-                self._apply_shuffle(current_item=self._current_item)
-            else:
-                self.queue = list(self._shuffle_order)
-                self.index = self.queue.index(self._current_item) if self._current_item in self.queue else 0
-                self._current_item = self.queue[self.index] if self.queue else None
+            self._apply_shuffle(current_item=self._current_item)
+            self._restore_next_sources()
         else:
             self._shuffle_order = []
-            self._priority_queue = []
             self._ordered_queue = list(self._base_queue)
             self.queue = list(self._base_queue)
-            self.index = (
-            self._base_queue.index(self._current_item)
-            if self._current_item in self._base_queue
-            else 0)
-
+            if self._current_item in self._base_queue:
+                self.index = self._base_queue.index(self._current_item)
+            else:
+                self.index = 0
             self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
+            self._restore_next_sources()
 
-    def _apply_shuffle(self, current_item=None):
+    def _apply_shuffle(self, current_item=None, preserve_existing=False):
         if not self._base_queue:
             self.queue = []
             self.index = -1
             self._current_item = None
             return
-        
-        new_base_queue = list(self._base_queue)
-        if current_item in new_base_queue:
+
+        if current_item in self._base_queue:
             self._current_item = current_item
-        elif new_base_queue:
-            self._current_item = new_base_queue[0]
+        elif self._base_queue:
+            self._current_item = self._base_queue[0]
         else:
             self._current_item = None
 
-        shuffled = random.sample(self._base_queue, len(self._base_queue))
-        self._ordered_queue = list(shuffled)
-        self.queue = list(self._ordered_queue)
-        self._shuffle_order = list(self.queue)
+        if preserve_existing and self._shuffle_order:
+            base_set = set(self._base_queue)
+            shuffle_set = set(self._shuffle_order)
+            if base_set == shuffle_set:
+                self.queue = list(self._shuffle_order)
+                # Move the chosen song to the front so that after it finishes
+                # playback continues through the rest of the shuffle order.
+                if self._current_item in self.queue:
+                    self.queue.remove(self._current_item)
+                    self.queue.insert(0, self._current_item)
+                self.index = 0
+                self._ordered_queue = list(self.queue)
+                return
 
-        if current_item is not None and current_item in self.queue:
-            self.index = self.queue.index(current_item)
-        elif self.queue:
-            self.index = 0
+        # Need a new shuffle — use a stored seed so the same base
+        # queue stays in the same randomized order across set_queue calls.
+        if not preserve_existing or self._shuffle_seed is None:
+            self._shuffle_seed = random.randint(0, 2 ** 31 - 1)
+
+        rng = random.Random(self._shuffle_seed)
+        others = [u for u in self._base_queue if u != self._current_item]
+        rng.shuffle(others)
+
+        if self._current_item is not None:
+            shuffled = [self._current_item] + others
         else:
-            self.index = -1
+            shuffled = others
 
-        self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
+        self._shuffle_order = list(shuffled)
+        self._ordered_queue = list(shuffled)
+        self.queue = list(shuffled)
+        self.index = 0
+        self._current_item = self.queue[0] if self.queue else None
 
     # ---------- controls ----------
     def pause(self):
@@ -268,13 +284,15 @@ class Player:
         # Auto-play next when the media has ended
         if status != QMediaPlayer.MediaStatus.EndOfMedia or not self.autoplay_enabled:
             return
-        if self._end_signal_pending:
-            return
 
-        self._end_signal_pending = True
-        QTimer.singleShot(0, self._emit_autoplay_next)
+        generation = self._play_generation
+        QTimer.singleShot(0, lambda g=generation: self._emit_autoplay_next(g))
 
-    def _emit_autoplay_next(self):
-        """Defer the queue transition until Qt finishes its current media event."""
-        if self.autoplay_enabled:
+    def _emit_autoplay_next(self, generation):
+        """Defer the queue transition until Qt finishes its current media event.
+        
+        The generation argument lets us silently ignore callbacks that were
+        issued for an earlier play_url() call.
+        """
+        if generation == self._play_generation and self.autoplay_enabled:
             self.signals.autoplay_next.emit()

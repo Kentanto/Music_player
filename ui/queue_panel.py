@@ -1,40 +1,152 @@
+import os
 from pathlib import Path
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem, QLabel, QLineEdit, QComboBox, QMenu
-from PySide6.QtCore import QEvent, Qt, Signal
-from PySide6.QtGui import QColor
-import random
+from PySide6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+    QLabel, QLineEdit, QComboBox, QMenu, QStyledItemDelegate, QStyle,
+)
+from PySide6.QtCore import QEvent, Qt, Signal, QSize
+from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
+
+
+def _seconds_to_str(total_seconds):
+    if not total_seconds or total_seconds <= 0:
+        return ""
+    m, s = divmod(int(total_seconds), 60)
+    if m >= 60:
+        h, m = divmod(m, 60)
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+class QueueItemDelegate(QStyledItemDelegate):
+    """Rich row delegate: icon + title / artist / duration."""
+
+    ICON_SIZE = 40
+    PADDING = 6
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._default_icon = QIcon.fromTheme("audio-x-generic")
+        self._thumb_cache = {}
+
+    def _thumb_pixmap(self, thumbnail):
+        if thumbnail in self._thumb_cache:
+            return self._thumb_cache[thumbnail]
+        if thumbnail and isinstance(thumbnail, str):
+            if Path(thumbnail).exists():
+                pix = QPixmap(thumbnail)
+                if not pix.isNull():
+                    self._thumb_cache[thumbnail] = pix
+                    return pix
+        self._thumb_cache[thumbnail] = None
+        return None
+
+    def paint(self, painter, option, index):
+        painter.save()
+        data = index.data(Qt.UserRole)
+        is_playing = bool(index.data(Qt.UserRole + 1))
+        is_queued_next = bool(index.data(Qt.UserRole + 2))
+
+        bg = option.palette.base().color()
+        if is_playing:
+            bg = QColor("#1b5e20")
+        elif is_queued_next:
+            bg = QColor("#5d4037")
+        elif option.state & QStyle.State_Selected:
+            bg = QColor("#1db954")
+        elif option.state & QStyle.State_MouseOver:
+            bg = QColor("#282828")
+        painter.fillRect(option.rect, bg)
+
+        pen = QPen(QColor("#282828"))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+
+        icon_rect = option.rect.adjusted(self.PADDING, self.PADDING, 0, -self.PADDING)
+        icon_rect.setWidth(self.ICON_SIZE)
+        icon_rect.setHeight(self.ICON_SIZE)
+
+        if data and data.get("thumbnail"):
+            thumb = self._thumb_pixmap(data["thumbnail"])
+            if thumb:
+                painter.drawPixmap(icon_rect, thumb.scaled(
+                    self.ICON_SIZE, self.ICON_SIZE,
+                    Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation
+                ))
+            else:
+                painter.drawText(icon_rect, Qt.AlignCenter, "??")
+        else:
+            painter.drawText(icon_rect, Qt.AlignCenter, "??")
+
+        text_x = icon_rect.right() + self.PADDING
+        duration_w = 50
+
+        title = str(data.get("title", "Unknown")) if data else "Unknown"
+        if is_playing:
+            title = "? " + title
+        elif is_queued_next:
+            title = "? " + title
+        if data and data.get("count") is not None:
+            title += f"  ({data.get('count', 0)} songs)"
+
+        font = QFont("Arial", 9, QFont.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor("#ffffff"))
+        title_rect = option.rect.adjusted(text_x, self.PADDING, -self.PADDING - duration_w, 0)
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop, title)
+
+        artist = str(data.get("artist", "")) if data else ""
+        if artist:
+            font.setPointSize(8)
+            font.setBold(False)
+            painter.setFont(font)
+            painter.setPen(QColor("#b3b3b3"))
+            artist_rect = option.rect.adjusted(text_x, self.PADDING + 18, -self.PADDING - duration_w, 0)
+            painter.drawText(artist_rect, Qt.AlignLeft | Qt.AlignTop, artist)
+
+        duration = _seconds_to_str(data.get("duration") if data else None)
+        if duration:
+            font.setPointSize(8)
+            painter.setFont(font)
+            painter.setPen(QColor("#888888"))
+            dur_rect = option.rect.adjusted(0, self.PADDING, -self.PADDING, 0)
+            painter.drawText(dur_rect, Qt.AlignRight | Qt.AlignTop, duration)
+
+        painter.restore()
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), self.ICON_SIZE + self.PADDING * 2)
 
 
 class QueuePanel(QWidget):
-    """Displays search results or queue"""
-    
-    item_selected = Signal(object)  # Emitted when user selects an item
-    item_previewed = Signal(object)  # Emitted when an item becomes keyboard-selected
-    item_double_clicked = Signal(object)  # Emitted when user double-clicks an item
-    queue_next_requested = Signal(object)  # Emitted when user wants to queue a track next
+    """Displays search results or queue with rich rows."""
+
+    item_selected = Signal(object)
+    item_previewed = Signal(object)
+    item_double_clicked = Signal(object)
+    queue_next_requested = Signal(object)
     add_to_playlist_requested = Signal(object)
-    remove_requested = Signal(object)  # Emitted when a playlist track should be removed
-    rename_requested = Signal(object)  # Emitted when a playlist or track should be renamed
-    delete_playlist_requested = Signal(object)  # Emitted when a playlist should be deleted
-    
+    remove_requested = Signal(object)
+    rename_requested = Signal(object)
+    delete_playlist_requested = Signal(object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.master_items = []
-        self.items_data = []  # Store visible item data
+        self.items_data = []
         self.preserve_order = False
         self.current_item_source = None
-        self.current_item_index = -1
+        self.queued_next_source = None
         self.init_ui()
-    
+
     def init_ui(self):
         layout = QVBoxLayout()
         layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Title
+
         title = QLabel("Results / Queue")
         layout.addWidget(title)
-        
-        # Filter and sort controls
+
         controls = QHBoxLayout()
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("Filter songs...")
@@ -50,8 +162,8 @@ class QueuePanel(QWidget):
 
         layout.addLayout(controls)
 
-        # List widget
         self.list_widget = QListWidget()
+        self.list_widget.setItemDelegate(QueueItemDelegate(self.list_widget))
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.installEventFilter(self)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
@@ -60,15 +172,37 @@ class QueuePanel(QWidget):
         self.list_widget.itemActivated.connect(self.on_item_double_clicked)
         self.list_widget.currentItemChanged.connect(self.on_current_item_changed)
         layout.addWidget(self.list_widget)
-        
+
         self.setLayout(layout)
-    
+
     def add_items(self, items, preserve_order=False, current_item_source=None):
-        """Add items to the queue. Items should be dicts with 'title', 'url', 'duration', etc."""
         self.master_items = list(items)
+        self.items_data = list(items)
         self.preserve_order = preserve_order
         self.current_item_source = current_item_source
-        self.current_item_index = -1
+        self._refresh_display()
+
+    def set_playback_order(self, ordered_sources, current_source=None, queued_next=None):
+        source_map = {}
+        for item in self.master_items:
+            src = item.get("file_path") or item.get("url")
+            if src:
+                source_map[src] = item
+
+        new_order = []
+        seen = set()
+        for src in ordered_sources:
+            if src in source_map and src not in seen:
+                new_order.append(source_map[src])
+                seen.add(src)
+        for item in self.master_items:
+            src = item.get("file_path") or item.get("url")
+            if src not in seen:
+                new_order.append(item)
+
+        self.items_data = new_order
+        self.current_item_source = current_source
+        self.queued_next_source = queued_next
         self._refresh_display()
 
     def _refresh_display(self):
@@ -77,140 +211,78 @@ class QueuePanel(QWidget):
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
 
         filter_text = self.filter_input.text().strip().casefold()
-        sort_text = self.sort_combo.currentText()
+        sort_mode = self.sort_combo.currentText()
 
-        items = [item for item in self.master_items if filter_text in (item.get("title", "").casefold())]
+        items = list(self.items_data)
 
-        if sort_text == "Title":
-            items.sort(key=lambda item: (item.get("title") or "").casefold())
-        elif sort_text == "Duration":
-            items.sort(key=lambda item: item.get("duration") or 0)
-        elif sort_text == "Date Added":
-            def date_key(item):
-                if item.get("date_added") is not None:
-                    return item.get("date_added")
-                if item.get("file_path"):
-                    try:
-                        return __import__("pathlib").Path(item.get("file_path")).stat().st_mtime
-                    except Exception:
-                        return 0
-                return 0
-            items.sort(key=date_key, reverse=True)
-        elif sort_text == "Shuffled":
-            items = list(items)
-            if getattr(self, "shuffle_order", None):
-                ordered = []
-                for source in self.shuffle_order:
-                    for item in items:
-                        item_source = item.get("file_path") or item.get("url")
-                        if item_source == source:
-                            ordered.append(item)
-                            break
-                items = ordered + [item for item in items if (item.get("file_path") or item.get("url")) not in self.shuffle_order]
-            else:
-                random.shuffle(items)
+        if sort_mode == "Title":
+            items.sort(key=lambda x: str(x.get("title", "")).casefold())
+        elif sort_mode == "Duration":
+            items.sort(key=lambda x: x.get("duration") or float("inf"))
+        elif sort_mode == "Date Added":
+            items.sort(key=lambda x: x.get("added_at") or "")
+        self.list_widget.setSortingEnabled(False)
 
-        if self.preserve_order:
-            items = list(items)
+        if filter_text:
+            items = [item for item in items if filter_text in str(item.get("title", "")).casefold()]
 
-        if items == self.items_data and self.list_widget.count() == len(items):
-            self.items_data = items
-            for index, item in enumerate(items):
-                self._update_list_item(self.list_widget.item(index), item)
-            return
-
-        self.items_data = items
         self.list_widget.clear()
 
-        for item in items:
+        current_idx = -1
+        for idx, item in enumerate(items):
+            src = item.get("file_path") or item.get("url")
             list_item = QListWidgetItem()
-            self._update_list_item(list_item, item)
+            list_item.setData(Qt.UserRole, item)
+            list_item.setData(Qt.UserRole + 1, src == self.current_item_source)
+            list_item.setData(Qt.UserRole + 2, src == self.queued_next_source)
+            list_item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
             self.list_widget.addItem(list_item)
+            if src == self.current_item_source:
+                current_idx = idx
+
+        if current_idx >= 0:
+            self.list_widget.setCurrentRow(current_idx)
+        elif items:
+            self.list_widget.setCurrentRow(0)
 
         if was_at_bottom:
             scroll_bar.setValue(scroll_bar.maximum())
         else:
-            scroll_bar.setValue(min(previous_scroll_value, scroll_bar.maximum()))
+            scroll_bar.setValue(previous_scroll_value)
 
-    def _update_list_item(self, list_item, item):
-        title = item.get("title", "Unknown")
-        duration = item.get("duration")
-        item_type = item.get("type")
-
-        if item_type == "playlist":
-            display_text = f"{title} ({item.get('count', 0)} songs)"
-        elif duration is not None:
-            display_text = f"{title} ({duration // 60}:{duration % 60:02d})"
-        else:
-            display_text = title
-
-        list_item.setText(display_text)
-        font = list_item.font()
-        font.setBold(self._matches_current_source(item))
-        list_item.setFont(font)
-        if self._matches_current_source(item):
-            list_item.setBackground(QColor("#000000"))
-            list_item.setForeground(QColor("#1db954"))
-        else:
-            list_item.setData(Qt.BackgroundRole, None)
-            list_item.setData(Qt.ForegroundRole, None)
-    
-    def _matches_current_source(self, item):
-        current_source = self.current_item_source
-        if current_source is None:
-            return False
-
-        for candidate in (item.get("file_path"), item.get("url")):
-            if candidate is not None and str(candidate) == str(current_source):
-                return True
-        return False
-
-    def clear(self):
-        self.list_widget.clear()
-        self.master_items = []
-        self.items_data = []
-        self.filter_input.clear()
-        self.sort_combo.setCurrentText("Date Added")
-    
     def get_current_index(self):
         return self.list_widget.currentRow()
-    
+
     def get_current_item(self):
-        idx = self.get_current_index()
-        if 0 <= idx < len(self.items_data):
-            return self.items_data[idx]
+        current = self.list_widget.currentItem()
+        if current is not None:
+            return current.data(Qt.UserRole)
         return None
-    
+
     def get_all_urls(self):
-        """Get all playback sources in current queue"""
         return [item.get("file_path") or item.get("url") for item in self.items_data]
-    
+
     def on_item_clicked(self, item):
-        idx = self.list_widget.row(item)
-        self.item_selected.emit(self.items_data[idx])
+        self.item_selected.emit(item.data(Qt.UserRole))
 
     def on_current_item_changed(self, current, previous):
         if current is None:
             return
-        idx = self.list_widget.row(current)
-        if 0 <= idx < len(self.items_data):
-            self.item_previewed.emit(self.items_data[idx])
+        self.item_previewed.emit(current.data(Qt.UserRole))
 
     def eventFilter(self, watched, event):
         if watched is self.list_widget and event.type() == QEvent.KeyPress:
             if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                idx = self.list_widget.currentRow()
-                if 0 <= idx < len(self.items_data):
-                    self.item_double_clicked.emit(self.items_data[idx])
+                current = self.list_widget.currentItem()
+                if current is not None:
+                    self.item_double_clicked.emit(current.data(Qt.UserRole))
                     return True
         return super().eventFilter(watched, event)
-    
+
     def on_item_double_clicked(self, item):
-        idx = self.list_widget.row(item)
-        self.item_double_clicked.emit(self.items_data[idx])
-    
+        self.item_double_clicked.emit(item.data(Qt.UserRole))
+
     def remove_item_by_url(self, url):
-        """Remove an item from the queue by its URL"""
         for i, item in enumerate(self.items_data):
             if (item.get("file_path") or item.get("url")) == url:
                 self.items_data.pop(i)
@@ -222,20 +294,14 @@ class QueuePanel(QWidget):
         if item is None:
             return
 
-        idx = self.list_widget.row(item)
-        if idx < 0 or idx >= len(self.items_data):
-            return
-
-        data = self.items_data[idx]
+        data = item.data(Qt.UserRole)
         if data is None:
             return
 
-        # Auto-select the item on right-click so the UI reflects the action
-        self.list_widget.setCurrentRow(idx)
+        self.list_widget.setCurrentItem(item)
         try:
             self.item_selected.emit(data)
         except Exception:
-            # If no handler is connected, continue silently
             pass
 
         menu = QMenu(self.list_widget)

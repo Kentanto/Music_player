@@ -158,35 +158,31 @@ class MusicAppController:
     
     def handle_play_item(self, item):
         """Play a track from a dict item (shuffle-safe, index-free)"""
-
         if not item or item.get("type") == "playlist":
             return
-
-        visible_urls = self.window.get_current_queue_urls()
 
         selected_url = self._resolve_url(item)
         if not selected_url:
             return
 
-        if self.player.shuffle_enabled and selected_url in self.player._base_queue:
-            urls = list(self.player._base_queue)
-        else:
-            urls = list(visible_urls)
+        # If the song is already in the active player queue, just seek to it
+        # and play WITHOUT rebuilding/touching shuffle order.
+        if selected_url in self.player.queue:
+            idx = self.player.queue.index(selected_url)
+            self.player.index = idx
+            self.player._current_item = selected_url
+            self.player.play()
+            self._refresh_queue_display()
+            self._update_now_playing()
+            return
+
+        urls = self.active_queue_urls or self.player._base_queue or self.window.get_current_queue_urls()
+        if not urls:
+            urls = [selected_url]
+        elif selected_url not in urls:
+            urls = [selected_url] + [u for u in urls if u != selected_url]
+
         self.active_queue_urls = list(urls)
-        # ensure item exists in queue
-        if selected_url not in urls:
-            # fallback: try stable match instead of index guessing
-            for u in urls:
-                if u == selected_url:
-                    break
-            else:
-                if urls:
-                    selected_url = urls[0]
-
-        print("Selected URL:", selected_url)
-        print("Queue length:", len(urls))
-        print("Found in queue:", selected_url in urls)
-
         self.player.set_queue(urls, current_item=selected_url)
         self.player.play()
 
@@ -240,21 +236,15 @@ class MusicAppController:
         if not source:
             return
 
-        actual_queue = list(self.player.queue) or list(self.active_queue_urls) or self.window.get_current_queue_urls()
-        if not actual_queue or source == self.player._current_item:
-            return
-
         self.player.queue_next(source)
         self.active_queue_urls = list(self.player.queue)
         self._refresh_queue_display()
     
     def handle_next_autoplay(self):
-        """Auto-play next track when current finishes"""
-        if self.player.index + 1 < len(self.player.queue):
-            self.handle_next()
-            print("Auto-playing next track")
-        else:
-            print("End of queue reached")
+        """Auto-play next track when current finishes."""
+        self.player._advance()
+        self._refresh_queue_display()
+        self._update_now_playing()
     
     def handle_prev(self):
         self.player.previous()
@@ -267,31 +257,29 @@ class MusicAppController:
         return item.get("file_path") or item.get("url")
 
     def handle_shuffle_toggle(self, enabled):
-        self.window.queue_panel.sort_combo.setCurrentText(
-            "Shuffled" if enabled else "Date Added"
-        )
-        queue_urls = self.active_queue_urls or self.window.get_current_queue_urls() or self.player._base_queue
+        queue_urls = self.active_queue_urls or self.player._base_queue
         if not queue_urls:
             self.player.shuffle_enabled = False
-            self.player._ordered_queue = list(self.player._base_queue)
-            self.player.queue = list(self.player._base_queue)
             self.window.player_bar.set_shuffle_state(False)
+            self.window.queue_panel.sort_combo.blockSignals(True)
             self.window.queue_panel.sort_combo.setCurrentText("Date Added")
+            self.window.queue_panel.sort_combo.blockSignals(False)
             set_app_setting("shuffle_enabled", "False")
             return
 
         current_item = self.player._current_item
-
         if current_item not in queue_urls:
             current_index = self.window.get_current_track_index()
-            if 0 <= current_index < len(queue_urls):
-                current_item = queue_urls[current_index]
-            else:
-                current_item = queue_urls[0]
+            current_item = queue_urls[current_index] if 0 <= current_index < len(queue_urls) else queue_urls[0]
 
         self.player.set_queue(queue_urls, current_item=current_item)
         self.player.toggle_shuffle(enabled)
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
+        self.window.queue_panel.sort_combo.blockSignals(True)
+        self.window.queue_panel.sort_combo.setCurrentText(
+            "Shuffled" if self.player.shuffle_enabled else "Date Added"
+        )
+        self.window.queue_panel.sort_combo.blockSignals(False)
         set_app_setting("shuffle_enabled", str(bool(self.player.shuffle_enabled)))
         self.active_queue_urls = list(queue_urls)
         self._refresh_queue_display()
@@ -494,14 +482,29 @@ class MusicAppController:
     
     def _start_metadata_fetcher(self):
         """Start background thread to fetch metadata and remove long videos"""
-        # Stop any existing fetcher
         if self.metadata_fetcher:
             self.metadata_fetcher.stop()
-        
-        # Create new fetcher
+
         self.metadata_fetcher = MetadataFetcher(self.current_results, max_duration=600)
         self.metadata_fetcher.video_too_long.connect(self._on_video_too_long)
+        self.metadata_fetcher.metadata_ready.connect(self._on_metadata_ready)
         self.metadata_fetcher.start()
+
+    def _on_metadata_ready(self, url, metadata):
+        """Enrich search result dicts with fetched duration/artist/thumbnail."""
+        updated = False
+        for result in self.current_results:
+            if result.get("url") == url:
+                if metadata.get("duration"):
+                    result["duration"] = metadata["duration"]
+                if metadata.get("artist"):
+                    result["artist"] = metadata["artist"]
+                if metadata.get("thumbnail"):
+                    result["thumbnail"] = metadata["thumbnail"]
+                updated = True
+                break
+        if updated:
+            self._refresh_queue_display()
 
     def _update_now_playing(self):
         """Update the UI with the currently playing track title and artwork."""
@@ -625,14 +628,26 @@ class MusicAppController:
     def _refresh_queue_display(self):
         track_items = [item for item in self.current_results if item.get("type") != "playlist"]
         if not track_items:
-            self.window.queue_panel.add_items(self.current_results, preserve_order=False, current_item_source=self.player._current_item)
+            self.window.queue_panel.add_items(
+                self.current_results, preserve_order=False, current_item_source=self.player._current_item
+            )
             return
 
-        current_sort = self.window.queue_panel.sort_combo.currentText()
-        preserve_order = current_sort not in {"Shuffled"}
-        self.window.queue_panel.shuffle_order = list(getattr(self.player, "_shuffle_order", []) or self.player.queue)
-        self.window.queue_panel.current_item_source = self.player._current_item
-        self.window.display_results(track_items, preserve_order=preserve_order, current_item_source=self.player._current_item)
+        # If the player queue is populated, show items in that playback order.
+        ordered_sources = list(self.player.queue) if self.player.queue else self.active_queue_urls
+        queued_next = self.player._next_sources[0] if self.player._next_sources else None
+
+        if ordered_sources:
+            self.window.queue_panel.master_items = self.current_results
+            self.window.queue_panel.set_playback_order(
+                ordered_sources,
+                current_source=self.player._current_item,
+                queued_next=queued_next,
+            )
+        else:
+            self.window.display_results(
+                track_items, preserve_order=True, current_item_source=self.player._current_item
+            )
 
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
@@ -641,7 +656,7 @@ class MusicAppController:
         )
         playlist_songs = get_playlist_songs(playlist_id)
         self.current_results = [
-            {"title": title, "url": url, "file_path": file_path, "type": "track"}
+            self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "type": "track"})
             for title, url, file_path in playlist_songs
         ]
         self.active_queue_urls = [
@@ -657,6 +672,19 @@ class MusicAppController:
         set_app_setting("last_view", "playlist")
         set_app_setting("last_playlist_id", str(playlist_id))
         print(f"Opened playlist {playlist_id} with {len(playlist_songs)} songs")
+
+    def _enrich_track_dict(self, item):
+        """Add per-file thumbnail/artist from db into an item dict."""
+        file_path = item.get("file_path")
+        if file_path:
+            metadata = get_track_metadata(file_path)
+            if metadata:
+                item.setdefault("artist", metadata.get("artist"))
+                item.setdefault("thumbnail", metadata.get("thumbnail"))
+            sidecar = thumbnail_path_for_audio(file_path)
+            if Path(sidecar).exists():
+                item["thumbnail"] = sidecar
+        return item
 
     def handle_remove_song(self, item):
         """Confirm and remove a local track from the open playlist."""
@@ -692,7 +720,10 @@ class MusicAppController:
             if track.get("file_path") or track.get("url")
         ]
         self.active_queue_urls = remaining_urls
-        self.player.set_queue(remaining_urls)
+        current_item = self.player._current_item
+        if current_item not in remaining_urls:
+            current_item = remaining_urls[0] if remaining_urls else None
+        self.player.set_queue(remaining_urls, current_item=current_item)
         self._refresh_queue_display()
         self._update_now_playing()
 
