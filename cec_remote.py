@@ -33,6 +33,8 @@ from PySide6.QtCore import QThread, Signal
 # be.
 CEC_CODE_ACTIONS = {
     0x00: "select_requested",   # Select / OK
+    0x0B: "select_requested",   # Tune Function (common alternate OK)
+    0x41: "select_requested",   # Play Function (common alternate OK)
     0x0D: "back_requested",     # Exit / Back
     0x01: "navigation:up",
     0x02: "navigation:down",
@@ -48,7 +50,12 @@ CEC_CODE_ACTIONS = {
 # Matches a "ui-cmd: <name> (0x44)" line, which cec-ctl only prints for
 # USER_CONTROL_PRESSED messages (USER_CONTROL_RELEASED has no such line),
 # so this alone is enough to identify a key press.
-_UI_CMD_RE = re.compile(r"ui-cmd:.*\(0x([0-9A-Fa-f]{1,2})\)")
+# Some versions print "UI Command:" or use different spacing.
+_UI_CMD_RE = re.compile(r"ui[- ]cmd:.*\(0x([0-9A-Fa-f]{1,2})\)", re.IGNORECASE)
+
+# Fallback: some older versions of v4l-utils print "0x44" in the payload
+# or on a separate line after USER_CONTROL_PRESSED.
+_UI_HEX_RE = re.compile(r"0x([0-9A-Fa-f]{1,2})(?:\s|$|,)")
 
 # Matches the "Physical Address" line from `cec-ctl -S` output, used for
 # auto-detecting which /dev/cecN is actually wired to the connected port.
@@ -241,10 +248,18 @@ class CecRemoteListener(QThread):
             return
 
         match = _UI_CMD_RE.search(line)
-        if not match:
-            return
+        if match:
+            code = int(match.group(1), 16)
+        else:
+            # If there's no ui-cmd line, look for a lone hex code on a
+            # USER_CONTROL_PRESSED line (avoids matching addresses).
+            if "USER_CONTROL_PRESSED" not in line:
+                return
+            fm = _UI_HEX_RE.search(line)
+            if not fm:
+                return
+            code = int(fm.group(1), 16)
 
-        code = int(match.group(1), 16)
         action = CEC_CODE_ACTIONS.get(code)
         print(
             f"[CEC] parsed code=0x{code:02X} action={action or 'ignored'}",
