@@ -236,7 +236,9 @@ QPushButton#fullscreenControl:hover {
 }
 
 QPushButton#fullscreenControl:focus {
-    border: 2px solid #1ed760;
+    border: 3px solid #1ed760;
+    background-color: #383838;
+    outline: none;
 }
 
 QPushButton#fullscreenControl:pressed {
@@ -262,7 +264,10 @@ QPushButton#fullscreenPlayControl:hover {
 }
 
 QPushButton#fullscreenPlayControl:focus {
-    border: 2px solid #ffffff;
+    border: 3px solid #ffffff;
+    background-color: #75e39a;
+    color: #000000;
+    outline: none;
 }
 
 QPushButton#fullscreenPlayControl:pressed {
@@ -284,6 +289,19 @@ QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:hover {
 QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:pressed {
     background-color: #169c46;
     border-color: #1ed760;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:focus {
+    border: 3px solid #ffffff;
+    background-color: #75e39a;
+    color: #000000;
+    outline: none;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenControl:focus {
+    border: 3px solid #1ed760;
+    background-color: #383838;
+    outline: none;
 }
 
 QLabel#fullscreenVolumeLabel {
