@@ -4,6 +4,19 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 
 
+class FocusAwareSlider(QSlider):
+    """Slider that emits focus_changed(bool) for external highlight wiring."""
+    focus_changed = Signal(bool)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.focus_changed.emit(True)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.focus_changed.emit(False)
+
+
 class PlayerBar(QWidget):
     """Player controls: play/pause toggle, next, prev, volume, seek"""
     
@@ -26,9 +39,10 @@ class PlayerBar(QWidget):
         # ===== Seek bar =====
         seek_layout = QHBoxLayout()
         self.time_label_start = QLabel("0:00")
-        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider = FocusAwareSlider(Qt.Horizontal)
         self.seek_slider.setRange(0, 100)
         self.seek_slider.sliderMoved.connect(self.on_seek)  # Only on manual drag
+        self.seek_slider.focus_changed.connect(self._on_seek_focus_changed)
         self.time_label_end = QLabel("0:00")
         
         seek_layout.addWidget(self.time_label_start)
@@ -77,11 +91,12 @@ class PlayerBar(QWidget):
         volume_label = QLabel("🔊 Vol")
         volume_layout.addWidget(volume_label)
         
-        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider = FocusAwareSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(30)
         self.volume_slider.setMaximumWidth(100)
         self.volume_slider.valueChanged.connect(self.on_volume_changed)
+        self.volume_slider.focus_changed.connect(self._on_volume_focus_changed)
         volume_layout.addWidget(self.volume_slider)
         
         self.volume_label = QLabel("30")
@@ -123,6 +138,15 @@ class PlayerBar(QWidget):
         self.volume_slider.setValue(value)
         self.volume_label.setText(str(value))
         self.volume_slider.blockSignals(False)
+
+    def _on_seek_focus_changed(self, focused: bool):
+        color = "#1ed760" if focused else "#ffffff"
+        self.time_label_start.setStyleSheet(f"color: {color};")
+        self.time_label_end.setStyleSheet(f"color: {color};")
+
+    def _on_volume_focus_changed(self, focused: bool):
+        color = "#1ed760" if focused else "#ffffff"
+        self.volume_label.setStyleSheet(f"color: {color};")
 
     def set_track_info(self, title):
         self.track_label.setText(title or "No track selected")
