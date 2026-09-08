@@ -24,6 +24,11 @@ QPushButton:hover {
     border: 1px solid #1ed760;
 }
 
+QPushButton:focus {
+    border: 2px solid #1ed760;
+    outline: none;
+}
+
 QPushButton#shuffleButton {
     background-color: #282828;
     border: 1px solid #404040;
@@ -107,6 +112,14 @@ QListWidget::item:selected {
 
 QListWidget::item:hover {
     background-color: #282828;
+}
+
+QListWidget:focus {
+    border: 2px solid #1ed760;
+}
+
+QListWidget::item:focus {
+    border: 1px solid #1ed760;
 }
 
 /* Sliders */
@@ -222,6 +235,10 @@ QPushButton#fullscreenControl:hover {
     border-color: #7a7a7a;
 }
 
+QPushButton#fullscreenControl:focus {
+    border: 2px solid #1ed760;
+}
+
 QPushButton#fullscreenControl:pressed {
     background-color: #1b1b1b;
     border-color: #1db954;
@@ -242,6 +259,10 @@ QPushButton#fullscreenPlayControl {
 QPushButton#fullscreenPlayControl:hover {
     background-color: #35c96a;
     border-color: #75e39a;
+}
+
+QPushButton#fullscreenPlayControl:focus {
+    border: 2px solid #ffffff;
 }
 
 QPushButton#fullscreenPlayControl:pressed {

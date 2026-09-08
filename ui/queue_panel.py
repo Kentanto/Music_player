@@ -63,6 +63,12 @@ class QueueItemDelegate(QStyledItemDelegate):
         painter.setPen(pen)
         painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
 
+        if option.state & QStyle.State_HasFocus:
+            focus_pen = QPen(QColor("#1ed760"))
+            focus_pen.setWidth(2)
+            painter.setPen(focus_pen)
+            painter.drawLine(option.rect.topLeft(), option.rect.bottomLeft())
+
         icon_rect = option.rect.adjusted(self.PADDING, self.PADDING, 0, -self.PADDING)
         icon_rect.setWidth(self.ICON_SIZE)
         icon_rect.setHeight(self.ICON_SIZE)
@@ -83,10 +89,6 @@ class QueueItemDelegate(QStyledItemDelegate):
         duration_w = 50
 
         title = str(data.get("title", "Unknown")) if data else "Unknown"
-        if is_playing:
-            title = "? " + title
-        elif is_queued_next:
-            title = "? " + title
         if data and data.get("count") is not None:
             title += f"  ({data.get('count', 0)} songs)"
 
