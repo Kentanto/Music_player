@@ -280,6 +280,8 @@ class QueuePanel(QWidget):
         return super().eventFilter(watched, event)
 
     def on_item_double_clicked(self, item):
+        if item is None:
+            return
         self.item_double_clicked.emit(item.data(Qt.UserRole))
 
     def remove_item_by_url(self, url):
