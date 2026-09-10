@@ -18,6 +18,19 @@ from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap,
 from .eq_visualizer import EQVisualizer
 
 
+class FocusAwareSlider(QSlider):
+    """Slider that emits focus_changed(bool) for external highlight wiring."""
+    focus_changed = Signal(bool)
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.focus_changed.emit(True)
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.focus_changed.emit(False)
+
+
 class EQProgressBadge(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -121,12 +134,13 @@ class FullscreenPlayer(QWidget):
 
         info_layout.addWidget(metadata_panel)
 
-        self.seek_slider = QSlider(Qt.Horizontal)
+        self.seek_slider = FocusAwareSlider(Qt.Horizontal)
         self.seek_slider.setRange(0, 100)
         self.seek_slider.setObjectName("fullscreenSeek")
         self.seek_slider.sliderMoved.connect(
             lambda value: self.seek_requested.emit(value / 100.0)
         )
+        self.seek_slider.focus_changed.connect(self._on_seek_focus_changed)
 
         normal_controls = QWidget()
         controls = QGridLayout(normal_controls)
@@ -148,20 +162,21 @@ class FullscreenPlayer(QWidget):
 
         transport_controls = QHBoxLayout()
         transport_controls.setSpacing(8)
-        volume_label = QLabel("Volume")
-        volume_label.setObjectName("fullscreenVolumeLabel")
+        self.volume_label_widget = QLabel("Volume")
+        self.volume_label_widget.setObjectName("fullscreenVolumeLabel")
         volume_control = QWidget()
         volume_control.setObjectName("fullscreenVolumeControl")
         volume_layout = QHBoxLayout(volume_control)
         volume_layout.setContentsMargins(10, 4, 10, 4)
         volume_layout.setSpacing(7)
-        volume_layout.addWidget(volume_label)
+        volume_layout.addWidget(self.volume_label_widget)
 
-        self.volume_slider = QSlider(Qt.Horizontal)
+        self.volume_slider = FocusAwareSlider(Qt.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(30)
         self.volume_slider.setObjectName("fullscreenVolume")
         self.volume_slider.valueChanged.connect(self.volume_changed.emit)
+        self.volume_slider.focus_changed.connect(self._on_volume_focus_changed)
         volume_layout.addWidget(self.volume_slider)
         controls.addWidget(volume_control, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
 
@@ -273,6 +288,15 @@ class FullscreenPlayer(QWidget):
         total_text = self._format_time(total)
         self.normal_current_time_label.setText(current_text)
         self.normal_total_time_label.setText(total_text)
+
+    def _on_seek_focus_changed(self, focused: bool):
+        color = "#1ed760" if focused else "#f2f2f2"
+        self.normal_current_time_label.setStyleSheet(f"color: {color};")
+        self.normal_total_time_label.setStyleSheet(f"color: {color};")
+
+    def _on_volume_focus_changed(self, focused: bool):
+        color = "#1ed760" if focused else "#c4c4c4"
+        self.volume_label_widget.setStyleSheet(f"color: {color};")
 
     def set_seek_position(self, position):
         self._seek_position = max(0.0, min(float(position), 1.0))

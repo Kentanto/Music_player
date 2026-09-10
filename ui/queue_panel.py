@@ -83,10 +83,6 @@ class QueueItemDelegate(QStyledItemDelegate):
         duration_w = 50
 
         title = str(data.get("title", "Unknown")) if data else "Unknown"
-        if is_playing:
-            title = "? " + title
-        elif is_queued_next:
-            title = "? " + title
         if data and data.get("count") is not None:
             title += f"  ({data.get('count', 0)} songs)"
 

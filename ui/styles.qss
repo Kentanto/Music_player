@@ -24,6 +24,12 @@ QPushButton:hover {
     border: 1px solid #1ed760;
 }
 
+QPushButton:focus {
+    border: 1px solid #1ed760;
+    background-color: #2a3a2a;
+    outline: none;
+}
+
 QPushButton#shuffleButton {
     background-color: #282828;
     border: 1px solid #404040;
@@ -52,7 +58,7 @@ QPushButton:pressed {
 QPushButton[remoteHighlight="true"], QLineEdit[remoteHighlight="true"],
 QSlider[remoteHighlight="true"], QListWidget[remoteHighlight="true"],
 QComboBox[remoteHighlight="true"] {
-    border: 2px solid #1ed760;
+    border: 1px solid #1ed760;
 }
 
 QPushButton[remoteHighlight="true"] {
@@ -61,13 +67,13 @@ QPushButton[remoteHighlight="true"] {
 
 /* Specific overrides for buttons with custom IDs that have higher CSS specificity */
 QPushButton#shuffleButton[remoteHighlight="true"] {
-    border: 2px solid #1ed760;
+    border: 1px solid #1ed760;
     background-color: #1b2a20;
 }
 
 QLineEdit[remoteHighlight="true"], QLineEdit[remoteHighlight="true"]:focus {
     background-color: #1b2a20;
-    border: 2px solid #1ed760;
+    border: 1px solid #1ed760;
 }
 
 QComboBox[remoteHighlight="true"] {
@@ -85,7 +91,8 @@ QLineEdit {
 }
 
 QLineEdit:focus {
-    border: 2px solid #1db954;
+    border: 1px solid #1db954;
+    background-color: #1b2a20;
 }
 
 /* List Widget */
@@ -109,7 +116,15 @@ QListWidget::item:hover {
     background-color: #282828;
 }
 
+QListWidget:focus {
+    border: 1px solid #1ed760;
+}
+
 /* Sliders */
+QSlider:focus {
+    outline: none;
+}
+
 QSlider::groove:horizontal {
     background-color: #282828;
     border-radius: 4px;
@@ -124,8 +139,18 @@ QSlider::handle:horizontal {
     border-radius: 7px;
 }
 
-QSlider::handle:horizontal:hover {
+QSlider::handle:horizontal:hover,
+QSlider::handle:horizontal:focus {
     background-color: #1ed760;
+}
+
+QSlider[remoteHighlight="true"] {
+    border: none;
+}
+
+QSlider[remoteHighlight="true"]::handle:horizontal {
+    background-color: #aaffaa;
+    border: 1px solid #ffffff;
 }
 
 /* Labels */
@@ -208,18 +233,24 @@ QPushButton#fullscreenControl, QPushButton#fullscreenPlayControl {
 }
 
 QPushButton#fullscreenControl[remoteHighlight="true"] {
-    border: 2px solid #1ed760;
+    border: 1px solid #1ed760;
     background-color: #1b2a20;
 }
 
 QPushButton#fullscreenPlayControl[remoteHighlight="true"] {
-    border: 2px solid #1ed760;
+    border: 1px solid #1ed760;
     background-color: #1b2a20;
 }
 
 QPushButton#fullscreenControl:hover {
     background-color: #383838;
     border-color: #7a7a7a;
+}
+
+QPushButton#fullscreenControl:focus {
+    border: 1px solid #1ed760;
+    background-color: #383838;
+    outline: none;
 }
 
 QPushButton#fullscreenControl:pressed {
@@ -244,6 +275,13 @@ QPushButton#fullscreenPlayControl:hover {
     border-color: #75e39a;
 }
 
+QPushButton#fullscreenPlayControl:focus {
+    border: 1px solid #ffffff;
+    background-color: #75e39a;
+    color: #000000;
+    outline: none;
+}
+
 QPushButton#fullscreenPlayControl:pressed {
     background-color: #169c46;
     border-color: #1ed760;
@@ -251,7 +289,7 @@ QPushButton#fullscreenPlayControl:pressed {
 
 QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl {
     background-color: #1db954;
-    border: 2px solid #1ed760;
+    border: 1px solid #1ed760;
     color: #101010;
 }
 
@@ -263,6 +301,19 @@ QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:hover {
 QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:pressed {
     background-color: #169c46;
     border-color: #1ed760;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenPlayControl:focus {
+    border: 1px solid #ffffff;
+    background-color: #75e39a;
+    color: #000000;
+    outline: none;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenControl:focus {
+    border: 1px solid #1ed760;
+    background-color: #383838;
+    outline: none;
 }
 
 QLabel#fullscreenVolumeLabel {
