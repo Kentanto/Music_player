@@ -1,3 +1,91 @@
+[CEC] Found CEC device /dev/cec1 at 2.0.0.0.
+[CEC] Starting monitor on /dev/cec1 (physical address 2.0.0.0).
+[CEC-RAW] Driver Info:
+[CEC-RAW] Driver Name                : vc4_hdmi
+[CEC-RAW] Adapter Name               : vc4-hdmi-1
+[CEC-RAW] Capabilities               : 0x0000031e
+[CEC-RAW] Logical Addresses
+[CEC-RAW] Transmit
+[CEC-RAW] Passthrough
+[CEC-RAW] Remote Control Support
+[CEC-RAW] Connector Info
+[CEC-RAW] Reply Vendor ID
+[CEC-RAW] Driver version             : 6.18.39
+[CEC-RAW] Available Logical Addresses: 1
+[CEC-RAW] DRM Connector Info         : card 1, connector 44
+[CEC-RAW] Physical Address           : 2.0.0.0
+[CEC-RAW] Logical Address Mask       : 0x0010
+[CEC-RAW] CEC Version                : 2.0
+[CEC-RAW] Vendor ID                  : 0x000c03 (HDMI)
+[CEC-RAW] OSD Name                   : 'Playback'
+[CEC-RAW] Logical Addresses          : 1 (Allow RC Passthrough)
+[CEC-RAW] 
+[CEC-RAW] Logical Address          : 4 (Playback Device 1)
+[CEC-RAW] Primary Device Type    : Playback
+[CEC-RAW] Logical Address Type   : Playback
+[CEC-RAW] All Device Types       : Playback
+[CEC-RAW] RC TV Profile          : None
+[CEC-RAW] Device Features        :
+[CEC-RAW] None
+[CEC-RAW] 
+[CEC-RAW] 
+[CEC-RAW] Transmit from Playback Device 1 to all (4 to 15):
+[CEC-RAW] ACTIVE_SOURCE (0x82):
+[CEC-RAW] phys-addr: 2.0.0.0
+[CEC-RAW] Sequence: 382 Tx Timestamp: 51164.126160s
+[CEC-RAW] 
+[CEC-RAW] 
+[CEC-RAW] (warn: State Change events were lost)
+[CEC-RAW] 51163.574538: Event: State Change: PA: 2.0.0.0, LA mask: 0x0010
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: down (0x02)
+[CEC] parsed code=0x02 action=navigation:down
+[CEC-EMIT] navigation('down')
+[NAV] down: auto-start -> queue[0]=
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: down (0x02)
+[CEC] parsed code=0x02 action=navigation:down
+[CEC-EMIT] navigation('down')
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: down (0x02)
+[CEC] parsed code=0x02 action=navigation:down
+[CEC-EMIT] navigation('down')
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: down (0x02)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: down (0x02)
+[CEC] parsed code=0x02 action=navigation:down
+[CEC-EMIT] navigation('down')
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: down (0x02)
+[CEC] parsed code=0x02 action=navigation:down
+[CEC-EMIT] navigation('down')
+[NAV] down: auto-start -> queue[8]=
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: select (0x00)
+[CEC] parsed code=0x00 action=select_requested
+[CEC-EMIT] select_requested()
+[NAV] select: queue[9]=
+Input #0, mp3, from '/home/livingroompi/.local/share/music_engine/playlists/Olai/おやすみルーシー - kxi2-AJx5QM.mp3':
+  Metadata:
+    encoder         : Lavf61.7.103
+  Duration: 00:02:59.16, start: 0.023021, bitrate: 192 kb/s
+  Stream #0:0: Audio: mp3 (mp3float), 48000 Hz, stereo, fltp, 192 kb/s
+      Metadata:
+        encoder         : Lavc61.19
+[mp3float @ 0x1b8d1490] Could not update timestamps for skipped samples.
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_PRESSED (0x44):
+[CEC-RAW] ui-cmd: up (0x01)
+[CEC] parsed code=0x01 action=navigation:up
+[CEC-EMIT] navigation('up')
+[CEC-RAW] Received from TV to Playback Device 1 (0 to 4): USER_CONTROL_RELEASED (0x45)
 Excellent. We can now say with certainty that sudo is not the problem.
 
 This command works without a password:
