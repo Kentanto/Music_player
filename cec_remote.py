@@ -192,7 +192,6 @@ class CecRemoteListener(QThread):
         if not device or not phys_addr:
             found = self.find_connected_device()
             if not found:
-<<<<<<< HEAD
                 return
             device = device or found[0]
             phys_addr = phys_addr or found[1]
@@ -255,7 +254,6 @@ class CecRemoteListener(QThread):
                 "[CEC] Add this line with 'sudo visudo':\n"
                 f"[CEC]   {who} ALL=(ALL) NOPASSWD: {cec_ctl_path}\n"
                 "[CEC] Then restart the application.",
-=======
                 print(
                     "[CEC] No usable HDMI-CEC device found.",
                     flush=True,
@@ -274,14 +272,12 @@ class CecRemoteListener(QThread):
             print(
                 "[CEC] ERROR: sudo is required for "
                 "cec-ctl --monitor on this Linux system.",
->>>>>>> 8076464ce392fe1cefa0dddb86bbd9030df15865
+
                 flush=True,
             )
             return
 
-<<<<<<< HEAD
-        # stdbuf stays outside sudo so only cec-ctl receives elevation.
-=======
+
         # Build cec-ctl command.
         cec_cmd = [
             cec_ctl_path,
@@ -321,7 +317,7 @@ class CecRemoteListener(QThread):
         cec_cmd = [sudo_path, "-n"] + cec_cmd
 
         # stdbuf remains unprivileged and makes cec-ctl output line-buffered.
->>>>>>> 8076464ce392fe1cefa0dddb86bbd9030df15865
+
         cmd = [stdbuf_path, "-oL", "-eL"] + cec_cmd
 
         print(
