@@ -310,9 +310,11 @@ class CecRemoteListener(QThread):
         line_stripped = line.strip()
         print(f"[CEC-RAW] {line_stripped}", flush=True)
 
-        # Button released — clear the debounce so a re-press is accepted.
+        # Button released — do NOT clear the debounce here.
+        # Some TVs send a spurious second PRESSED event right after RELEASE
+        # for a single physical tap; keeping _last_code set prevents that
+        # from double-firing until the debounce window expires.
         if "USER_CONTROL_RELEASED" in line:
-            self._last_code = None
             return
 
         # Detect permission error (fallback if sudo check above somehow missed it)
@@ -346,10 +348,10 @@ class CecRemoteListener(QThread):
 
         # Debounce: TVs repeat a PRESSED event very quickly even for a
         # single tap (or while a button is held). Ignore repeats of the
-        # same code within 250 ms to prevent double-firing navigation
+        # same code within 500 ms to prevent double-firing navigation
         # and play/pause toggles.
         now = time.monotonic()
-        if code == self._last_code and (now - self._last_time) < 0.25:
+        if code == self._last_code and (now - self._last_time) < 0.5:
             return
         self._last_code = code
         self._last_time = now
