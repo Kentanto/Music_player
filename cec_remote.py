@@ -170,36 +170,73 @@ class CecRemoteListener(QThread):
         # Resolve exact binary paths for helpful error messages
         cec_ctl_path = shutil.which("cec-ctl") or "/usr/bin/cec-ctl"
         stdbuf_path = shutil.which("stdbuf") or "/usr/bin/stdbuf"
+        sudo_path = shutil.which("sudo")
         who = getpass.getuser()
 
-        # Build cec-ctl command, with or without elevation depending on what worked
-        cec_cmd = ["cec-ctl", f"-d{device}",
-                   "--playback",
-                   "--to", "0", "--active-source", f"phys-addr={phys_addr}",
-                   "--monitor"]
+        # Build cec-ctl command.
+        # The Raspberry Pi vc4_hdmi driver allows normal users to query
+        # the adapter, but requires elevated privileges for --monitor.
+        cec_cmd = [
+            cec_ctl_path,
+            f"-d{device}",
+            "--playback",
+            "--to", "0",
+            "--active-source", f"phys-addr={phys_addr}",
+            "--monitor",
+        ]
+
+        # cec-ctl --monitor requires root on this system.
+        # Check whether passwordless sudo is available independently of
+        # whether normal `cec-ctl -S` access worked.
+        if self._use_sudo != "pkexec" and sudo_path:
+            try:
+                sudo_test = subprocess.run(
+                    [sudo_path, "-n", cec_ctl_path, f"-d{device}", "-S"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=5,
+                )
+
+                if sudo_test.returncode == 0:
+                    self._use_sudo = True
+                    print(
+                        "[CEC] Passwordless sudo available; "
+                        "using elevated cec-ctl for monitor mode.",
+                        flush=True,
+                    )
+                else:
+                    self._use_sudo = False
+
+            except (OSError, subprocess.TimeoutExpired):
+                self._use_sudo = False
 
         if self._use_sudo is True:
-            # Sanity check: confirm sudo -n works non-interactively
-            test = subprocess.run(
-                ["sudo", "-n", "cec-ctl", f"-d{device}", "-S"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if test.returncode != 0 and ("password" in test.stderr.lower()
-                                          or "password" in test.stdout.lower()):
-                print(
-                    "[CEC] ERROR: cec-ctl needs sudo but 'sudo -n cec-ctl' asks for a password.\n"
-                    "[CEC] Either add this line to /etc/sudoers (use visudo):\n"
-                    f"[CEC]   {who} ALL=(ALL) NOPASSWD: {cec_ctl_path}, {stdbuf_path}\n"
-                    "[CEC] Or install pkexec (polkit) for an automatic prompt.\n"
-                    "[CEC] Then restart the app.",
-                    flush=True,
-                )
-                return
-            cec_cmd = ["sudo", "-n"] + cec_cmd
+            # Run only cec-ctl as root. stdbuf remains unprivileged.
+            cec_cmd = [sudo_path, "-n"] + cec_cmd
+
         elif self._use_sudo == "pkexec":
             cec_cmd = ["pkexec"] + cec_cmd
 
+        else:
+            print(
+                "[CEC] ERROR: cec-ctl --monitor requires elevated privileges "
+                "on this system, but passwordless sudo is not available.\n"
+                "[CEC] Add this line with 'sudo visudo':\n"
+                f"[CEC]   {who} ALL=(ALL) NOPASSWD: {cec_ctl_path}\n"
+                "[CEC] Then restart the application.",
+                flush=True,
+            )
+            return
+
+        # stdbuf stays outside sudo so only cec-ctl receives elevation.
         cmd = [stdbuf_path, "-oL", "-eL"] + cec_cmd
+
+        print(
+            f"[CEC] Starting monitor on {device} "
+            f"(physical address {phys_addr}).",
+            flush=True,
+        )
 
         try:
             self.process = subprocess.Popen(
@@ -210,12 +247,18 @@ class CecRemoteListener(QThread):
                 text=True,
                 bufsize=1,
             )
+
             for line in self.process.stdout:
                 if self.isInterruptionRequested():
                     break
                 self._handle_line(line)
-        except (OSError, ValueError):
-            pass
+
+        except (OSError, ValueError) as error:
+            print(
+                f"[CEC] Failed to start cec-ctl monitor: {error}",
+                flush=True,
+            )
+
         finally:
             if self.process:
                 self.process.terminate()
@@ -224,6 +267,7 @@ class CecRemoteListener(QThread):
                 except subprocess.TimeoutExpired:
                     self.process.kill()
                 self.process = None
+
 
     def _handle_line(self, line):
         line_stripped = line.strip()
