@@ -22,7 +22,6 @@ import os
 import re
 import shutil
 import subprocess
-import time
 
 from PySide6.QtCore import QThread, Signal
 
@@ -34,27 +33,18 @@ from PySide6.QtCore import QThread, Signal
 # be.
 CEC_CODE_ACTIONS = {
     0x00: "select_requested",   # Select / OK
-    0x0B: "select_requested",   # Contents Menu (used as OK on some remotes)
+    0x0B: "select_requested",   # Tune Function (common alternate OK)
+    0x41: "select_requested",   # Play Function (common alternate OK)
     0x0D: "back_requested",     # Exit / Back
     0x01: "navigation:up",
     0x02: "navigation:down",
     0x03: "navigation:left",
     0x04: "navigation:right",
-    # --- Transport controls ---
-    0x41: "play_pause",         # Volume Up (LG / some vendors use as Play)
     0x44: "play_pause",         # Play
-    0x45: "stop_requested",     # Stop
     0x46: "play_pause",         # Pause
-    0x47: "previous_track",     # Record (used as Rewind on some remotes)
-    0x48: "previous_track",     # Rewind
-    0x49: "next_track",         # Fast Forward
-    0x4A: "next_track",         # Eject (sometimes mapped to next)
-    0x4B: "next_track",         # Skip Forward
-    0x4C: "previous_track",     # Skip Backward
-    # --- Function Select (One Touch Play) ---
-    0x60: "play_pause",         # Play Function
-    0x61: "play_pause",         # Pause-Play Function
-    0x62: "stop_requested",     # Record Function
+    0x45: "stop_requested",     # Stop
+    0x4B: "next_track",         # Forward/skip-forward
+    0x4C: "previous_track",     # Backward/skip-backward
 }
 
 # Matches a "ui-cmd: <name> (0x44)" line, which cec-ctl only prints for
@@ -96,8 +86,6 @@ class CecRemoteListener(QThread):
         self._device = device
         self._phys_addr = phys_addr
         self.process = None
-        self._last_code = None
-        self._last_time = 0.0
 
     @staticmethod
     def available():
@@ -310,11 +298,6 @@ class CecRemoteListener(QThread):
         line_stripped = line.strip()
         print(f"[CEC-RAW] {line_stripped}", flush=True)
 
-        # Button released — clear the debounce so a re-press is accepted.
-        if "USER_CONTROL_RELEASED" in line:
-            self._last_code = None
-            return
-
         # Detect permission error (fallback if sudo check above somehow missed it)
         low = line_stripped.lower()
         if "monitor mode failed" in low or "run this as root" in low or "permission denied" in low:
@@ -343,16 +326,6 @@ class CecRemoteListener(QThread):
             if not fm:
                 return
             code = int(fm.group(1), 16)
-
-        # Debounce: TVs repeat a PRESSED event very quickly even for a
-        # single tap (or while a button is held). Ignore repeats of the
-        # same code within 250 ms to prevent double-firing navigation
-        # and play/pause toggles.
-        now = time.monotonic()
-        if code == self._last_code and (now - self._last_time) < 0.25:
-            return
-        self._last_code = code
-        self._last_time = now
 
         action = CEC_CODE_ACTIONS.get(code)
         print(
