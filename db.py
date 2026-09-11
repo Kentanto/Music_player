@@ -639,6 +639,43 @@ def download_audio_to_folder(url, title, folder):
     if browser:
         ydl_opts["cookiesfrombrowser"] = (browser,)
 
+def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
+    from yt_dlp import YoutubeDL
+    import warnings
+
+    warnings.filterwarnings("ignore")
+    os.makedirs(folder, exist_ok=True)
+
+    safe_title = _sanitize_filename(title) or "audio"
+    out_template = os.path.join(folder, f"{safe_title}.%(ext)s")
+    print(
+        f"[audio-download] start: url={url!r}, title={title!r}, folder={folder!r}, template={out_template!r}",
+        flush=True,
+    )
+
+    ydl_opts = {
+        "format": "bestaudio[protocol=https]/bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 3,
+        "fragment_retries": 3,
+        "js_runtimes": {"node": {}},
+        **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
+        "outtmpl": out_template,
+        "postprocessors": [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }
+        ],
+    }
+
+    browser = os.environ.get("YTDLP_BROWSER")
+    if browser:
+        ydl_opts["cookiesfrombrowser"] = (browser,)
+
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -658,14 +695,16 @@ def download_audio_to_folder(url, title, folder):
 
             target_path = os.path.join(folder, f"{safe_title}.mp3")
             if os.path.exists(target_path):
-                download_thumbnail(info.get("thumbnail"), target_path)
+                if use_yt_thumbnail:
+                    download_thumbnail(info.get("thumbnail"), target_path)
                 update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                 return target_path
 
             for ext in ["mp3", "m4a", "opus", "wav", "aac"]:
                 alt_path = os.path.join(folder, f"{safe_title}.{ext}")
                 if os.path.exists(alt_path):
-                    download_thumbnail(info.get("thumbnail"), alt_path)
+                    if use_yt_thumbnail:
+                        download_thumbnail(info.get("thumbnail"), alt_path)
                     update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                     return alt_path
     except Exception as error:
@@ -675,7 +714,6 @@ def download_audio_to_folder(url, title, folder):
 
     print("[audio-download] failed: download completed but no output file was found", flush=True)
     return None
-
 
 def _artist_from_info(info):
     """Choose the most useful artist field yt-dlp exposes for a video."""
