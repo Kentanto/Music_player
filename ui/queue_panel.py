@@ -4,8 +4,9 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QMenu, QStyledItemDelegate, QStyle,
 )
-from PySide6.QtCore import QEvent, Qt, Signal, QSize
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 
 def _seconds_to_str(total_seconds):
@@ -16,6 +17,70 @@ def _seconds_to_str(total_seconds):
         h, m = divmod(m, 60)
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
+
+
+class ThumbnailLoader(QNetworkAccessManager):
+    """Async thumbnail downloader for remote URLs; local files are loaded directly."""
+
+    _instance = None
+
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            cls._instance = ThumbnailLoader()
+        return cls._instance
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thumb_cache = {}
+        self._in_flight = {}
+        self.finished.connect(self._on_reply_finished)
+
+    def request_thumb(self, url, list_widget):
+        if url in self._thumb_cache:
+            return self._thumb_cache[url]
+        if url in self._in_flight:
+            self._in_flight[url].append(list_widget)
+            return None
+        if not url or not isinstance(url, str):
+            return None
+        # Local file — load immediately
+        if Path(url).exists():
+            pix = QPixmap(url)
+            if not pix.isNull():
+                self._thumb_cache[url] = pix
+                return pix
+            return None
+        # Remote URL — queue download
+        self._in_flight[url] = [list_widget]
+        req = QNetworkRequest(QUrl(url))
+        self.get(req)
+        return None
+
+    def _on_reply_finished(self, reply: QNetworkReply):
+        url = reply.url().toString()
+        widgets = self._in_flight.pop(url, [])
+        if reply.error() == QNetworkReply.NoError:
+            data = reply.readAll()
+            if data:
+                pix = QPixmap()
+                if pix.loadFromData(data):
+                    self._thumb_cache[url] = pix
+                    for widget in widgets:
+                        widget.viewport().update()
+        reply.deleteLater()
+
+    @classmethod
+    def get_thumb(cls, url, list_widget):
+        return cls.instance().request_thumb(url, list_widget)
+
+    @classmethod
+    def has_thumb(cls, url):
+        return url in cls.instance()._thumb_cache
+
+    @classmethod
+    def cached_pixmap(cls, url):
+        return cls.instance()._thumb_cache.get(url)
 
 
 class QueueItemDelegate(QStyledItemDelegate):
@@ -29,7 +94,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         self._default_icon = QIcon.fromTheme("audio-x-generic")
         self._thumb_cache = {}
 
-    def _thumb_pixmap(self, thumbnail):
+    def _thumb_pixmap(self, thumbnail, list_widget):
         if thumbnail in self._thumb_cache:
             return self._thumb_cache[thumbnail]
         if thumbnail and isinstance(thumbnail, str):
@@ -38,6 +103,11 @@ class QueueItemDelegate(QStyledItemDelegate):
                 if not pix.isNull():
                     self._thumb_cache[thumbnail] = pix
                     return pix
+            # Remote URL — try async loader
+            pix = ThumbnailLoader.get_thumb(thumbnail, list_widget)
+            if pix:
+                self._thumb_cache[thumbnail] = pix
+                return pix
         self._thumb_cache[thumbnail] = None
         return None
 
@@ -67,8 +137,9 @@ class QueueItemDelegate(QStyledItemDelegate):
         icon_rect.setWidth(self.ICON_SIZE)
         icon_rect.setHeight(self.ICON_SIZE)
 
+        list_widget = self.parent()
         if data and data.get("thumbnail"):
-            thumb = self._thumb_pixmap(data["thumbnail"])
+            thumb = self._thumb_pixmap(data["thumbnail"], list_widget)
             if thumb:
                 painter.drawPixmap(icon_rect, thumb.scaled(
                     self.ICON_SIZE, self.ICON_SIZE,

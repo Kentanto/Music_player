@@ -371,3 +371,25 @@ QSlider#fullscreenVolume {
     min-width: 120px;
     max-width: 120px;
 }
+
+
+
+QSlider#fullscreenSeek[remoteHighlight="true"]::groove:horizontal {
+    background-color: #1b5e20;
+    height: 6px;
+    border-radius: 3px;
+}
+
+QSlider#fullscreenSeek[remoteHighlight="true"]::handle:horizontal {
+    background-color: #aaffaa;
+    border: 1px solid #ffffff;
+    width: 14px;
+    height: 14px;
+    margin: -4px 0;
+    border-radius: 7px;
+}
+
+QSlider#fullscreenVolume[remoteHighlight="true"]::handle:horizontal {
+    background-color: #aaffaa;
+    border: 1px solid #ffffff;
+}

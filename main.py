@@ -470,7 +470,7 @@ class MusicAppController:
             self.handle_load_playlists()
             return
 
-    def shutdown(self):
+    def shutdown(self): 
         """Stop background work before Qt destroys the application."""
         if self.metadata_fetcher and self.metadata_fetcher.isRunning():
             self.metadata_fetcher.stop()
