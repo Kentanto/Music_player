@@ -111,18 +111,28 @@ class QueueItemDelegate(QStyledItemDelegate):
         self._thumb_cache[thumbnail] = None
         return None
 
+    @staticmethod
+    def _is_selected(option, index, list_widget):
+        if option.state & QStyle.State_Selected:
+            return True
+        if list_widget and list_widget.selectionModel():
+            return list_widget.selectionModel().isSelected(index)
+        return False
+
     def paint(self, painter, option, index):
         painter.save()
         data = index.data(Qt.UserRole)
         is_playing = bool(index.data(Qt.UserRole + 1))
         is_queued_next = bool(index.data(Qt.UserRole + 2))
+        list_widget = self.parent()
+        selected = self._is_selected(option, index, list_widget)
 
         bg = option.palette.base().color()
         if is_playing:
             bg = QColor("#1b5e20")
         elif is_queued_next:
             bg = QColor("#5d4037")
-        elif option.state & QStyle.State_Selected:
+        elif selected:
             bg = QColor("#1db954")
         elif option.state & QStyle.State_MouseOver:
             bg = QColor("#282828")
@@ -205,6 +215,7 @@ class QueuePanel(QWidget):
         self.preserve_order = False
         self.current_item_source = None
         self.queued_next_source = None
+        self._reset_scroll_on_refresh = False
         self.init_ui()
 
     def init_ui(self):
@@ -231,6 +242,9 @@ class QueuePanel(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setItemDelegate(QueueItemDelegate(self.list_widget))
+        self.list_widget.setSelectionMode(QListWidget.SingleSelection)
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.installEventFilter(self)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
@@ -247,9 +261,10 @@ class QueuePanel(QWidget):
         self.items_data = list(items)
         self.preserve_order = preserve_order
         self.current_item_source = current_item_source
+        self._reset_scroll_on_refresh = True
         self._refresh_display()
 
-    def set_playback_order(self, ordered_sources, current_source=None, queued_next=None):
+    def set_playback_order(self, ordered_sources, current_source=None, queued_next=None, reset_scroll=False):
         source_map = {}
         for item in self.master_items:
             src = item.get("file_path") or item.get("url")
@@ -270,12 +285,17 @@ class QueuePanel(QWidget):
         self.items_data = new_order
         self.current_item_source = current_source
         self.queued_next_source = queued_next
+        if reset_scroll:
+            self._reset_scroll_on_refresh = True
         self._refresh_display()
 
     def _refresh_display(self):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
+        reset_scroll = getattr(self, "_reset_scroll_on_refresh", False)
+        if reset_scroll:
+            self._reset_scroll_on_refresh = False
 
         filter_text = self.filter_input.text().strip().casefold()
         sort_mode = self.sort_combo.currentText()
@@ -313,13 +333,18 @@ class QueuePanel(QWidget):
 
         if current_idx >= 0:
             self.list_widget.setCurrentRow(current_idx)
+            if reset_scroll:
+                self.list_widget.scrollToItem(self.list_widget.item(current_idx))
         elif items:
             self.list_widget.setCurrentRow(0)
+            if reset_scroll:
+                scroll_bar.setValue(0)
 
-        if was_at_bottom:
-            scroll_bar.setValue(scroll_bar.maximum())
-        else:
-            scroll_bar.setValue(previous_scroll_value)
+        if not reset_scroll:
+            if was_at_bottom:
+                scroll_bar.setValue(scroll_bar.maximum())
+            else:
+                scroll_bar.setValue(previous_scroll_value)
 
     def get_current_index(self):
         return self.list_widget.currentRow()

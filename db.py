@@ -734,3 +734,37 @@ def get_track_metadata(file_path):
     if not row:
         return {}
     return {"title": row[0], "artist": row[1], "thumbnail": row[2], "url": row[3]}
+
+
+def get_all_songs_from_all_playlists():
+    """Return de-duplicated list of all songs across every playlist, preserving first appearance order."""
+    with sqlite3.connect(DB) as conn:
+        rows = conn.execute(
+            "SELECT ps.file_path FROM playlist_songs ps "
+            "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.position"
+        ).fetchall()
+    seen = set()
+    result = []
+    for row in rows:
+        fp = row[0]
+        if fp not in seen:
+            seen.add(fp)
+            result.append(fp)
+    return result
+
+
+def get_all_playlist_songs_flat():
+    """Return all unique songs across every playlist as (title, url, file_path) rows, preserving first appearance order."""
+    with sqlite3.connect(DB) as conn:
+        rows = conn.execute(
+            "SELECT s.title, s.url, ps.file_path FROM playlist_songs ps "
+            "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.id"
+        ).fetchall()
+    seen = set()
+    result = []
+    for row in rows:
+        fp = row[2]
+        if fp not in seen:
+            seen.add(fp)
+            result.append(row)
+    return result

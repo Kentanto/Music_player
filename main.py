@@ -23,6 +23,7 @@ from db import (
     set_app_setting,
     thumbnail_path_for_audio,
     get_track_metadata,
+    get_all_playlist_songs_flat,
 )
 from metadata_fetcher import MetadataFetcher
 from spotify_download import SpotifyImportWorker
@@ -285,7 +286,7 @@ class MusicAppController:
         self._refresh_queue_display()
     
     def handle_load_playlists(self):
-        """Load playlist list for browsing"""
+        """Load playlist list for browsing. Appends a synthetic \"All Songs\" playlist."""
         self.current_playlist_id = None
         playlists = get_playlists()
         display_data = [
@@ -297,10 +298,17 @@ class MusicAppController:
             }
             for playlist in playlists
         ]
+        all_songs = get_all_playlist_songs_flat()
+        display_data.append({
+            "title": "All Songs",
+            "type": "playlist",
+            "playlist_id": "all",
+            "count": len(all_songs),
+        })
         self.current_results = display_data
         self._refresh_queue_display()
         set_app_setting("last_view", "playlists")
-        print(f"Loaded {len(playlists)} playlists")
+        print(f"Loaded {len(playlists)} playlists + All Songs ({len(all_songs)} tracks)")
 
     def handle_import_list(self):
         """Ask for a Spotify URL and import it without blocking the UI."""
@@ -601,7 +609,9 @@ class MusicAppController:
                 self.handle_open_playlist(int(last_playlist_id))
                 return
             except ValueError:
-                pass
+                if last_playlist_id == "all":
+                    self.handle_open_playlist("all")
+                    return
 
         self.handle_load_playlists()
 
@@ -644,6 +654,7 @@ class MusicAppController:
                 ordered_sources,
                 current_source=self.player._current_item,
                 queued_next=queued_next,
+                reset_scroll=True,
             )
         else:
             self.window.display_results(
@@ -657,7 +668,10 @@ class MusicAppController:
             "Shuffled" if self.player.shuffle_enabled else "Date Added"
         )
         self.window.queue_panel.sort_combo.blockSignals(False)
-        playlist_songs = get_playlist_songs(playlist_id)
+        if playlist_id == "all":
+            playlist_songs = get_all_playlist_songs_flat()
+        else:
+            playlist_songs = get_playlist_songs(playlist_id)
         self.current_results = [
             self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "type": "track"})
             for title, url, file_path in playlist_songs
@@ -691,7 +705,9 @@ class MusicAppController:
 
     def handle_remove_song(self, item):
         """Confirm and remove a local track from the open playlist."""
-        if self.current_playlist_id is None or not item or not item.get("file_path"):
+        if self.current_playlist_id is None or self.current_playlist_id == "all" or not item or not item.get("file_path"):
+            if self.current_playlist_id == "all":
+                QMessageBox.information(self.window, "Remove Song", "Songs cannot be removed from the All Songs view.")
             return
 
         title = item.get("title") or Path(item["file_path"]).stem
@@ -733,6 +749,10 @@ class MusicAppController:
     def handle_rename_item(self, item):
         """Rename a playlist or a song and refresh the current view."""
         if not item:
+            return
+
+        if item.get("type") == "playlist" and item.get("playlist_id") == "all":
+            QMessageBox.information(self.window, "Rename", "The All Songs playlist cannot be renamed.")
             return
 
         old_title = item.get("title") or ""
@@ -778,6 +798,10 @@ class MusicAppController:
     def handle_delete_playlist(self, item):
         """Require three confirmations before deleting a playlist."""
         if not item or item.get("type") != "playlist":
+            return
+
+        if item.get("playlist_id") == "all":
+            QMessageBox.information(self.window, "Delete Playlist", "The All Songs playlist cannot be deleted.")
             return
 
         playlist_name = item.get("title") or "this playlist"

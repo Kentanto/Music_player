@@ -32,7 +32,7 @@ class MainWindow(QMainWindow):
     load_playlists = Signal()
     add_to_playlist = Signal()
     import_list_requested = Signal()
-    open_playlist_requested = Signal(int)
+    open_playlist_requested = Signal(object)
     volume_changed = Signal(int)
     seek_requested = Signal(float)
     seek_delta_requested = Signal(int)
@@ -665,6 +665,7 @@ class MainWindow(QMainWindow):
                         break
                 target.setCurrentRow(found if found >= 0 else 0)
             target.scrollToItem(target.currentItem())
+            target.viewport().update()
 
         self._remote_clear_timer.start()
 

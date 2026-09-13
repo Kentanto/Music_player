@@ -120,6 +120,75 @@ QListWidget:focus {
     border: 1px solid #1ed760;
 }
 
+/* Scrollbars — fat and visible for low-res / mouse-only Raspberry Pi */
+QScrollBar:vertical {
+    background-color: #121212;
+    width: 20px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #505050;
+    min-height: 40px;
+    border-radius: 4px;
+    margin: 2px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #1db954;
+}
+
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 16px;
+    subcontrol-position: top;
+    subcontrol-origin: margin;
+    border-radius: 3px;
+}
+
+QScrollBar::add-line:vertical {
+    subcontrol-position: bottom;
+}
+
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QScrollBar:horizontal {
+    background-color: #121212;
+    height: 16px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #505050;
+    min-width: 40px;
+    border-radius: 4px;
+    margin: 2px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #1db954;
+}
+
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    width: 16px;
+    subcontrol-position: left;
+    subcontrol-origin: margin;
+    border-radius: 3px;
+}
+
+QScrollBar::add-line:horizontal {
+    subcontrol-position: right;
+}
+
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    background: none;
+}
+
 /* Sliders */
 QSlider:focus {
     outline: none;
