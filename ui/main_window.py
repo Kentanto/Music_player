@@ -612,8 +612,13 @@ class MainWindow(QMainWindow):
             target.animateClick()
 
         elif isinstance(target, QLineEdit):
-            target.setFocus(Qt.OtherFocusReason)
-            target.selectAll()
+            if target is self.search_panel.search_bar:
+                query = target.text().strip()
+                if query:
+                    self.search_requested.emit(query)
+            else:
+                target.setFocus(Qt.OtherFocusReason)
+                target.selectAll()
 
         elif isinstance(target, QSlider):
             # Layer 2: enter slider adjust mode
