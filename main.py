@@ -428,6 +428,7 @@ class MusicAppController:
         if index >= 0 and index < len(playlist_ids):
             return playlist_ids[index]
         return None
+
     def handle_volume_change(self, value):
         """Update player volume"""
         self.player.set_volume(value)
@@ -651,9 +652,11 @@ class MusicAppController:
 
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
+        self.window.queue_panel.sort_combo.blockSignals(True)
         self.window.queue_panel.sort_combo.setCurrentText(
             "Shuffled" if self.player.shuffle_enabled else "Date Added"
         )
+        self.window.queue_panel.sort_combo.blockSignals(False)
         playlist_songs = get_playlist_songs(playlist_id)
         self.current_results = [
             self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "type": "track"})

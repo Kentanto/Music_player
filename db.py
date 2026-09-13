@@ -602,43 +602,6 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
     return file_path
 
 
-def download_audio_to_folder(url, title, folder):
-    from yt_dlp import YoutubeDL
-    import warnings
-
-    warnings.filterwarnings("ignore")
-    os.makedirs(folder, exist_ok=True)
-
-    safe_title = _sanitize_filename(title) or "audio"
-    out_template = os.path.join(folder, f"{safe_title}.%(ext)s")
-    print(
-        f"[audio-download] start: url={url!r}, title={title!r}, folder={folder!r}, template={out_template!r}",
-        flush=True,
-    )
-
-    ydl_opts = {
-        "format": "bestaudio[protocol=https]/bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "retries": 3,
-        "fragment_retries": 3,
-        "js_runtimes": {"node": {}},
-        **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
-        "outtmpl": out_template,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
-    }
-
-    browser = os.environ.get("YTDLP_BROWSER")
-    if browser:
-        ydl_opts["cookiesfrombrowser"] = (browser,)
-
 def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
     from yt_dlp import YoutubeDL
     import warnings

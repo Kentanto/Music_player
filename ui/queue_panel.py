@@ -217,6 +217,10 @@ class QueuePanel(QWidget):
             items.sort(key=lambda x: x.get("duration") or float("inf"))
         elif sort_mode == "Date Added":
             items.sort(key=lambda x: x.get("added_at") or "")
+        elif sort_mode == "Shuffled":
+            # Items are already in the player's shuffled playback order;
+            # do not re-sort them here.
+            pass
         self.list_widget.setSortingEnabled(False)
 
         if filter_text:
