@@ -767,4 +767,17 @@ def get_all_playlist_songs_flat():
         if fp not in seen:
             seen.add(fp)
             result.append(row)
+
+    # Merge in any audio files present in playlist folders but not yet tracked in the DB
+    audio_extensions = {".mp3", ".m4a", ".opus", ".wav", ".aac"}
+    for folder_path in sorted(PLAYLISTS_DIR.iterdir()):
+        if not folder_path.is_dir():
+            continue
+        for file_path in sorted(folder_path.iterdir()):
+            if file_path.suffix.lower() in audio_extensions:
+                fp = str(file_path)
+                if fp not in seen:
+                    seen.add(fp)
+                    result.append((file_path.stem, None, fp))
+
     return result
