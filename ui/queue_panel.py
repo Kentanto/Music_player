@@ -4,8 +4,9 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QMenu, QStyledItemDelegate, QStyle,
 )
-from PySide6.QtCore import QEvent, Qt, Signal, QSize
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 
 def _seconds_to_str(total_seconds):
@@ -16,6 +17,70 @@ def _seconds_to_str(total_seconds):
         h, m = divmod(m, 60)
         return f"{h}:{m:02d}:{s:02d}"
     return f"{m}:{s:02d}"
+
+
+class ThumbnailLoader(QNetworkAccessManager):
+    """Async thumbnail downloader for remote URLs; local files are loaded directly."""
+
+    _instance = None
+
+    @classmethod
+    def instance(cls):
+        if cls._instance is None:
+            cls._instance = ThumbnailLoader()
+        return cls._instance
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._thumb_cache = {}
+        self._in_flight = {}
+        self.finished.connect(self._on_reply_finished)
+
+    def request_thumb(self, url, list_widget):
+        if url in self._thumb_cache:
+            return self._thumb_cache[url]
+        if url in self._in_flight:
+            self._in_flight[url].append(list_widget)
+            return None
+        if not url or not isinstance(url, str):
+            return None
+        # Local file — load immediately
+        if Path(url).exists():
+            pix = QPixmap(url)
+            if not pix.isNull():
+                self._thumb_cache[url] = pix
+                return pix
+            return None
+        # Remote URL — queue download
+        self._in_flight[url] = [list_widget]
+        req = QNetworkRequest(QUrl(url))
+        self.get(req)
+        return None
+
+    def _on_reply_finished(self, reply: QNetworkReply):
+        url = reply.url().toString()
+        widgets = self._in_flight.pop(url, [])
+        if reply.error() == QNetworkReply.NoError:
+            data = reply.readAll()
+            if data:
+                pix = QPixmap()
+                if pix.loadFromData(data):
+                    self._thumb_cache[url] = pix
+                    for widget in widgets:
+                        widget.viewport().update()
+        reply.deleteLater()
+
+    @classmethod
+    def get_thumb(cls, url, list_widget):
+        return cls.instance().request_thumb(url, list_widget)
+
+    @classmethod
+    def has_thumb(cls, url):
+        return url in cls.instance()._thumb_cache
+
+    @classmethod
+    def cached_pixmap(cls, url):
+        return cls.instance()._thumb_cache.get(url)
 
 
 class QueueItemDelegate(QStyledItemDelegate):
@@ -29,7 +94,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         self._default_icon = QIcon.fromTheme("audio-x-generic")
         self._thumb_cache = {}
 
-    def _thumb_pixmap(self, thumbnail):
+    def _thumb_pixmap(self, thumbnail, list_widget):
         if thumbnail in self._thumb_cache:
             return self._thumb_cache[thumbnail]
         if thumbnail and isinstance(thumbnail, str):
@@ -38,21 +103,36 @@ class QueueItemDelegate(QStyledItemDelegate):
                 if not pix.isNull():
                     self._thumb_cache[thumbnail] = pix
                     return pix
+            # Remote URL — try async loader
+            pix = ThumbnailLoader.get_thumb(thumbnail, list_widget)
+            if pix:
+                self._thumb_cache[thumbnail] = pix
+                return pix
         self._thumb_cache[thumbnail] = None
         return None
+
+    @staticmethod
+    def _is_selected(option, index, list_widget):
+        if option.state & QStyle.State_Selected:
+            return True
+        if list_widget and list_widget.selectionModel():
+            return list_widget.selectionModel().isSelected(index)
+        return False
 
     def paint(self, painter, option, index):
         painter.save()
         data = index.data(Qt.UserRole)
         is_playing = bool(index.data(Qt.UserRole + 1))
         is_queued_next = bool(index.data(Qt.UserRole + 2))
+        list_widget = self.parent()
+        selected = self._is_selected(option, index, list_widget)
 
         bg = option.palette.base().color()
         if is_playing:
             bg = QColor("#1b5e20")
         elif is_queued_next:
             bg = QColor("#5d4037")
-        elif option.state & QStyle.State_Selected:
+        elif selected:
             bg = QColor("#1db954")
         elif option.state & QStyle.State_MouseOver:
             bg = QColor("#282828")
@@ -67,8 +147,9 @@ class QueueItemDelegate(QStyledItemDelegate):
         icon_rect.setWidth(self.ICON_SIZE)
         icon_rect.setHeight(self.ICON_SIZE)
 
+        list_widget = self.parent()
         if data and data.get("thumbnail"):
-            thumb = self._thumb_pixmap(data["thumbnail"])
+            thumb = self._thumb_pixmap(data["thumbnail"], list_widget)
             if thumb:
                 painter.drawPixmap(icon_rect, thumb.scaled(
                     self.ICON_SIZE, self.ICON_SIZE,
@@ -134,6 +215,7 @@ class QueuePanel(QWidget):
         self.preserve_order = False
         self.current_item_source = None
         self.queued_next_source = None
+        self._reset_scroll_on_refresh = False
         self.init_ui()
 
     def init_ui(self):
@@ -160,6 +242,9 @@ class QueuePanel(QWidget):
 
         self.list_widget = QListWidget()
         self.list_widget.setItemDelegate(QueueItemDelegate(self.list_widget))
+        self.list_widget.setSelectionMode(QListWidget.SingleSelection)
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.installEventFilter(self)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
@@ -176,9 +261,10 @@ class QueuePanel(QWidget):
         self.items_data = list(items)
         self.preserve_order = preserve_order
         self.current_item_source = current_item_source
+        self._reset_scroll_on_refresh = True
         self._refresh_display()
 
-    def set_playback_order(self, ordered_sources, current_source=None, queued_next=None):
+    def set_playback_order(self, ordered_sources, current_source=None, queued_next=None, reset_scroll=False):
         source_map = {}
         for item in self.master_items:
             src = item.get("file_path") or item.get("url")
@@ -199,12 +285,17 @@ class QueuePanel(QWidget):
         self.items_data = new_order
         self.current_item_source = current_source
         self.queued_next_source = queued_next
+        if reset_scroll:
+            self._reset_scroll_on_refresh = True
         self._refresh_display()
 
     def _refresh_display(self):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
+        reset_scroll = getattr(self, "_reset_scroll_on_refresh", False)
+        if reset_scroll:
+            self._reset_scroll_on_refresh = False
 
         filter_text = self.filter_input.text().strip().casefold()
         sort_mode = self.sort_combo.currentText()
@@ -217,6 +308,10 @@ class QueuePanel(QWidget):
             items.sort(key=lambda x: x.get("duration") or float("inf"))
         elif sort_mode == "Date Added":
             items.sort(key=lambda x: x.get("added_at") or "")
+        elif sort_mode == "Shuffled":
+            # Items are already in the player's shuffled playback order;
+            # do not re-sort them here.
+            pass
         self.list_widget.setSortingEnabled(False)
 
         if filter_text:
@@ -238,13 +333,18 @@ class QueuePanel(QWidget):
 
         if current_idx >= 0:
             self.list_widget.setCurrentRow(current_idx)
+            if reset_scroll:
+                self.list_widget.scrollToItem(self.list_widget.item(current_idx))
         elif items:
             self.list_widget.setCurrentRow(0)
+            if reset_scroll:
+                scroll_bar.setValue(0)
 
-        if was_at_bottom:
-            scroll_bar.setValue(scroll_bar.maximum())
-        else:
-            scroll_bar.setValue(previous_scroll_value)
+        if not reset_scroll:
+            if was_at_bottom:
+                scroll_bar.setValue(scroll_bar.maximum())
+            else:
+                scroll_bar.setValue(previous_scroll_value)
 
     def get_current_index(self):
         return self.list_widget.currentRow()

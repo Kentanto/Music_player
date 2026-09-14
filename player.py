@@ -278,7 +278,7 @@ class Player:
 
     def _to_audio_volume(self, slider_value):
         normalized = max(0.0, min(slider_value / 100.0, 1.0))
-        max_gain = 0.20
+        max_gain = 0.50
         return ((10 ** normalized - 1) / 9) * max_gain
 
     def _on_audio_outputs_changed(self):

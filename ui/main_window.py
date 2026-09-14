@@ -1,3 +1,5 @@
+import time
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QGridLayout,
     QApplication, QAbstractButton, QLineEdit, QListWidget, QSlider, QComboBox,
@@ -30,7 +32,7 @@ class MainWindow(QMainWindow):
     load_playlists = Signal()
     add_to_playlist = Signal()
     import_list_requested = Signal()
-    open_playlist_requested = Signal(int)
+    open_playlist_requested = Signal(object)
     volume_changed = Signal(int)
     seek_requested = Signal(float)
     seek_delta_requested = Signal(int)
@@ -84,6 +86,15 @@ class MainWindow(QMainWindow):
         self._remote_clear_timer.setSingleShot(True)
         self._remote_clear_timer.setInterval(8000)
         self._remote_clear_timer.timeout.connect(self.clear_remote_highlight)
+
+        # Dedupe gate: CEC and keyboard evdev can both fire for the same
+        # remote button.  Drop duplicate navigations/activations arriving
+        # within this window (seconds).
+        self._navigate_dedupe_window = 0.080
+        self._last_navigate_dir = None
+        self._last_navigate_time = 0.0
+        self._activate_dedupe_window = 0.080
+        self._last_activate_time = 0.0
 
         central.setLayout(main_layout)
         self.setCentralWidget(central)
@@ -350,6 +361,16 @@ class MainWindow(QMainWindow):
             print("[NAV] exited slider adjust mode", flush=True)
 
     def navigate(self, direction):
+        # Dedupe: drop duplicate calls for the same direction within the
+        # dedupe window.  This prevents double-firing when both the CEC
+        # layer and the Linux keyboard evdev layer emit the same key.
+        now = time.monotonic()
+        if direction == self._last_navigate_dir and (now - self._last_navigate_time) < self._navigate_dedupe_window:
+            print(f"[NAV] {direction}: deduped", flush=True)
+            return
+        self._last_navigate_dir = direction
+        self._last_navigate_time = now
+
         targets = self._navigation_targets()
         if not targets:
             return
@@ -557,6 +578,13 @@ class MainWindow(QMainWindow):
         self.activate_highlighted()
 
     def activate_highlighted(self):
+        # Dedupe: drop duplicate activate calls within the dedupe window.
+        now = time.monotonic()
+        if (now - self._last_activate_time) < self._activate_dedupe_window:
+            print("[NAV] select: deduped", flush=True)
+            return
+        self._last_activate_time = now
+
         target = self._remote_highlighted
         if target is None:
             target = self.queue_panel.list_widget
@@ -653,6 +681,7 @@ class MainWindow(QMainWindow):
                         break
                 target.setCurrentRow(found if found >= 0 else 0)
             target.scrollToItem(target.currentItem())
+            target.viewport().update()
 
         self._remote_clear_timer.start()
 
