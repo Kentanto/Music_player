@@ -23,7 +23,9 @@ class PlayerSignals(QObject):
 class Player:
     def __init__(self):
         self.player = QMediaPlayer()
-        self.audio = QAudioOutput(QMediaDevices.defaultAudioOutput())
+        self._media_devices = QMediaDevices()
+        self.audio = QAudioOutput(self._media_devices.defaultAudioOutput())
+        self._media_devices.audioOutputsChanged.connect(self._on_audio_outputs_changed)
         self.signals = PlayerSignals()
 
         self.player.setAudioOutput(self.audio)
@@ -278,6 +280,12 @@ class Player:
         normalized = max(0.0, min(slider_value / 100.0, 1.0))
         max_gain = 0.20
         return ((10 ** normalized - 1) / 9) * max_gain
+
+    def _on_audio_outputs_changed(self):
+        """Switch to the new default audio output device when system default changes."""
+        new_device = self._media_devices.defaultAudioOutput()
+        self.audio.setDevice(new_device)
+        print(f"[AUDIO] Switched to default output: {new_device.description()}", flush=True)
     
     def _on_media_status_changed(self, status):
         """Handle media status changes - auto-play next when current ends"""

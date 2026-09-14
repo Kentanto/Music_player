@@ -584,8 +584,29 @@ class MainWindow(QMainWindow):
             target.animateClick()
 
         elif isinstance(target, QLineEdit):
-            target.setFocus(Qt.OtherFocusReason)
-            target.selectAll()
+            if target is self.search_panel.search_bar:
+                self.search_panel.on_search()
+            elif target is self.queue_panel.filter_input:
+                item = self.queue_panel.get_current_item()
+                if item is None and self.queue_panel.list_widget.count():
+                    # Find the currently-playing item, else select row 0
+                    found = -1
+                    for i in range(self.queue_panel.list_widget.count()):
+                        widget_item = self.queue_panel.list_widget.item(i)
+                        if widget_item and widget_item.font().bold():
+                            found = i
+                            break
+                    row = found if found >= 0 else 0
+                    self.queue_panel.list_widget.setCurrentRow(row)
+                    item = self.queue_panel.get_current_item()
+                if item:
+                    if item.get("type") == "playlist":
+                        self.open_playlist_requested.emit(item.get("playlist_id"))
+                    else:
+                        self.play_track_index.emit(item)
+            else:
+                target.setFocus(Qt.OtherFocusReason)
+                target.selectAll()
 
         elif isinstance(target, QSlider):
             # Layer 2: enter slider adjust mode
