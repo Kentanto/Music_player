@@ -1,0 +1,194 @@
+"""MOCUTE-052 / S23-AUTO raw input handler (Linux only).
+
+On Linux: uses ``evdev`` to *grab* the specific Bluetooth controller device(s).
+With ``grab()`` the kernel withholds events from X11 / Wayland / the desktop
+entirely, so the controller only talks to this app and we dictate what every
+button means.
+
+On Windows: ``evdev`` is unavailable.  WM_APPCOMMAND interception is handled
+inside ``MainWindow.nativeEvent`` (see ui/main_window.py).
+"""
+from __future__ import annotations
+
+import select
+import time
+
+from PySide6.QtCore import QThread, Signal
+
+try:
+    import evdev
+    from evdev import InputDevice, list_devices, ecodes
+    HAS_EVDEV = True
+except ImportError:
+    HAS_EVDEV = False
+
+
+DEVICE_NAME_PATTERNS = [
+    "mocute",
+    "MOCUTE",
+    "GamePad Plus",
+    "Gamepad Plus",
+    "S23 AUTO",
+    "s23 auto",
+    "Bluetooth Keyboard",
+    "Bluetooth Mouse",
+    "Consumer Control",
+    "Media Center",
+]
+
+if HAS_EVDEV:
+    KEY_MAP = {
+        ecodes.KEY_UP:           "navigation:up",
+        ecodes.KEY_DOWN:         "navigation:down",
+        ecodes.KEY_LEFT:         "navigation:left",
+        ecodes.KEY_RIGHT:        "navigation:right",
+        ecodes.KEY_VOLUMEUP:     "navigation:up",
+        ecodes.KEY_VOLUMEDOWN:   "navigation:down",
+        ecodes.KEY_NEXTSONG:     "navigation:right",
+        ecodes.KEY_PREVIOUSSONG: "navigation:left",
+        ecodes.KEY_ENTER:        "select_requested",
+        ecodes.KEY_OK:           "select_requested",
+        ecodes.KEY_BACK:         "back_requested",
+        ecodes.KEY_ESC:          "back_requested",
+        ecodes.KEY_HOMEPAGE:     "back_requested",
+        ecodes.KEY_PLAYPAUSE:    "play_pause",
+        ecodes.KEY_PLAY:         "play_pause",
+        ecodes.KEY_PAUSE:        "play_pause",
+        ecodes.KEY_STOPCD:       "stop_requested",
+        ecodes.KEY_LEFTCTRL:     None,
+        ecodes.KEY_RIGHTCTRL:    None,
+        ecodes.KEY_LEFTSHIFT:    None,
+        ecodes.KEY_RIGHTSHIFT:   None,
+        ecodes.KEY_LEFTALT:      None,
+        ecodes.KEY_RIGHTALT:     None,
+        ecodes.KEY_LEFTMETA:     None,
+        ecodes.KEY_RIGHTMETA:    None,
+    }
+else:
+    KEY_MAP = {}
+
+class MocuteListener(QThread):
+    """Read raw evdev events and emit Qt signals."""
+
+    play_pause = Signal()
+    next_track = Signal()
+    previous_track = Signal()
+    stop_requested = Signal()
+    back_requested = Signal()
+    navigation = Signal(str)
+    select_requested = Signal()
+
+    def __init__(self, parent=None, device_path=None, scan_interval=3.0):
+        super().__init__(parent)
+        self._device_path = device_path
+        self._scan_interval = scan_interval
+        self._running = False
+        self._last_key = None
+        self._last_time = 0.0
+        self._debounce = 0.18
+
+    def available(self) -> bool:
+        if not HAS_EVDEV:
+            return False
+        return bool(self._find_devices())
+
+    def _find_devices(self):
+        found = []
+        if self._device_path:
+            try:
+                found.append(InputDevice(self._device_path))
+            except OSError:
+                pass
+            return found
+        for path in list_devices():
+            try:
+                dev = InputDevice(path)
+                if any(pat in (dev.name or "") for pat in DEVICE_NAME_PATTERNS):
+                    found.append(dev)
+            except OSError:
+                continue
+        return found
+
+    def run(self):
+        if not HAS_EVDEV:
+            print("[MOCUTE] evdev not available", flush=True)
+            return
+        self._running = True
+        open_devices = []
+        while self._running:
+            if not open_devices:
+                for dev in self._find_devices():
+                    try:
+                        dev.grab()
+                        open_devices.append(dev)
+                        print(f"[MOCUTE] grabbed {dev.path} {dev.name!r}", flush=True)
+                    except OSError as exc:
+                        print(f"[MOCUTE] grab failed {dev.path}: {exc}", flush=True)
+                        try:
+                            dev.close()
+                        except OSError:
+                            pass
+                if not open_devices:
+                    time.sleep(self._scan_interval)
+                    continue
+            readable = []
+            for dev in list(open_devices):
+                try:
+                    readable.append(dev.fd)
+                except (OSError, ValueError):
+                    open_devices.remove(dev)
+            if not readable:
+                time.sleep(self._scan_interval)
+                continue
+            try:
+                rds, _, _ = select.select(readable, [], [], self._scan_interval)
+            except (select.error, OSError):
+                continue
+            for fd in rds:
+                for dev in open_devices:
+                    if dev.fd == fd:
+                        try:
+                            for event in dev.read():
+                                self._handle_event(event)
+                        except (OSError, BlockingIOError):
+                            pass
+                        break
+        for dev in open_devices:
+            try:
+                dev.ungrab()
+            except OSError:
+                pass
+            try:
+                dev.close()
+            except OSError:
+                pass
+        print("[MOCUTE] stopped", flush=True)
+
+    def _handle_event(self, event):
+        if not HAS_EVDEV or event.type != ecodes.EV_KEY:
+            return
+        if event.value == 0:
+            if event.code == self._last_key:
+                self._last_key = None
+            return
+        if event.value == 2:
+            return
+        now = time.monotonic()
+        if event.code == self._last_key and (now - self._last_time) < self._debounce:
+            return
+        self._last_key = event.code
+        self._last_time = now
+        action = KEY_MAP.get(event.code)
+        if action is None:
+            print(f"[MOCUTE] swallowed {ecodes.KEY.get(event.code, event.code)}", flush=True)
+            return
+        print(f"[MOCUTE] {ecodes.KEY.get(event.code, event.code)} -> {action}", flush=True)
+        if action.startswith("navigation:"):
+            self.navigation.emit(action.split(":", 1)[1])
+        else:
+            getattr(self, action).emit()
+
+    def stop(self):
+        self._running = False
+        self.wait(3000)
+

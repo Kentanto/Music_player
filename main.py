@@ -28,6 +28,7 @@ from db import (
 from metadata_fetcher import MetadataFetcher
 from spotify_download import SpotifyImportWorker
 from cec_remote import CecRemoteListener
+from mocute_listener import MocuteListener
 
 # Suppress all warnings
 warnings.filterwarnings("ignore")
@@ -43,6 +44,7 @@ class MusicAppController:
         self.metadata_fetcher = None  # Background thread for duration checking
         self.spotify_import_worker = None
         self.cec_remote = None
+        self.gamepad = None
         self.active_queue_urls = []
         self.current_playlist_id = None
         
@@ -115,6 +117,7 @@ class MusicAppController:
         self.window.seek_requested.connect(self.handle_seek)
         self.window.seek_delta_requested.connect(self.handle_seek_delta)
         self.window.fullscreen_requested.connect(self.handle_fullscreen)
+        self.window.stop_requested.connect(self.player.stop)
 
         fullscreen = self.window.fullscreen_player
         fullscreen.play_pause_clicked.connect(self.handle_play_pause)
@@ -132,6 +135,20 @@ class MusicAppController:
         self.cec_remote.select_requested.connect(self.window.activate_remote_target)
         if self.cec_remote.available():
             self.cec_remote.start()
+
+        self.gamepad = MocuteListener(self.window)
+        self.gamepad.play_pause.connect(self.handle_play_pause)
+        self.gamepad.next_track.connect(self.handle_next)
+        self.gamepad.previous_track.connect(self.handle_prev)
+        self.gamepad.stop_requested.connect(self.player.stop)
+        self.gamepad.back_requested.connect(self.handle_back)
+        self.gamepad.navigation.connect(self.window.navigate_remote)
+        self.gamepad.select_requested.connect(self.window.activate_remote_target)
+        self.gamepad.volume_up.connect(self.handle_volume_up)
+        self.gamepad.volume_down.connect(self.handle_volume_down)
+        self.gamepad.fullscreen_requested.connect(self.handle_fullscreen)
+        if self.gamepad.available():
+            self.gamepad.start()
     
     def handle_search(self, query):
         """Search YouTube for songs"""
@@ -442,7 +459,17 @@ class MusicAppController:
         self.player.set_volume(value)
         self.window.player_bar.set_volume(value)
         self.window.fullscreen_player.set_volume(value)
-    
+
+    def handle_volume_up(self):
+        """Bump volume up by 5."""
+        slider = self.window.player_bar.volume_slider
+        slider.setValue(min(100, slider.value() + 5))
+
+    def handle_volume_down(self):
+        """Bump volume down by 5."""
+        slider = self.window.player_bar.volume_slider
+        slider.setValue(max(0, slider.value() - 5))
+
     def handle_seek(self, position):
         """Seek to position (0.0-1.0)"""
         self.player.seek(position)
@@ -487,6 +514,8 @@ class MusicAppController:
             self.spotify_import_worker.wait()
         if self.cec_remote and self.cec_remote.isRunning():
             self.cec_remote.stop()
+        if self.gamepad and self.gamepad.isRunning():
+            self.gamepad.stop()
         self.player.stop()
     
     def _start_metadata_fetcher(self):

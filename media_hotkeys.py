@@ -1,3 +1,8 @@
+﻿"""Windows native media-key interception.
+
+Globally registers VK_MEDIA_PLAY_PAUSE so the play/pause key works
+even when the app is not focused.
+"""
 import sys
 import atexit
 import ctypes
@@ -13,24 +18,20 @@ except ImportError:
 HAS_WINDOWS_HOTKEYS = sys.platform == "win32"
 
 VK_MEDIA_PLAY_PAUSE = getattr(win32con, "VK_MEDIA_PLAY_PAUSE", 0xB3)
-VK_MEDIA_NEXT_TRACK = getattr(win32con, "VK_MEDIA_NEXT_TRACK", 0xB0)
-VK_MEDIA_PREV_TRACK = getattr(win32con, "VK_MEDIA_PREV_TRACK", 0xB1)
 WM_HOTKEY = getattr(win32con, "WM_HOTKEY", 0x0312)
 
 if HAS_WINDOWS_HOTKEYS:
     USER32 = ctypes.windll.user32
     USER32.RegisterHotKey.argtypes = [wintypes.HWND, wintypes.INT, wintypes.UINT, wintypes.UINT]
-    USER32.RegisterHotKey.restype = wintypes.BOOL
+    USER32.RegisterHotKey.restype   = wintypes.BOOL
     USER32.UnregisterHotKey.argtypes = [wintypes.HWND, wintypes.INT]
-    USER32.UnregisterHotKey.restype = wintypes.BOOL
-class MediaHotkeyFilter(QAbstractNativeEventFilter):
-    """Native Windows hotkey filter for media keys."""
+    USER32.UnregisterHotKey.restype  = wintypes.BOOL
 
-    HOTKEY_IDS = {
-        1: VK_MEDIA_PLAY_PAUSE,
-        2: VK_MEDIA_NEXT_TRACK,
-        3: VK_MEDIA_PREV_TRACK,
-    }
+
+class MediaHotkeyFilter(QAbstractNativeEventFilter):
+    """Intercept WM_HOTKEY globally on Windows."""
+
+    HOTKEY_IDS = {1: VK_MEDIA_PLAY_PAUSE}
 
     def __init__(self, window):
         super().__init__()
@@ -43,68 +44,42 @@ class MediaHotkeyFilter(QAbstractNativeEventFilter):
     def _register_hotkeys(self):
         if not HAS_WINDOWS_HOTKEYS:
             return
-
-        for hotkey_id, vk in self.HOTKEY_IDS.items():
-            if USER32.RegisterHotKey(self.hwnd, hotkey_id, 0, vk):
-                self.registered_ids.append(hotkey_id)
+        for hid, vk in self.HOTKEY_IDS.items():
+            if USER32.RegisterHotKey(self.hwnd, hid, 0, vk):
+                self.registered_ids.append(hid)
             else:
-                print(f"Warning: failed to register global hotkey {vk} (id {hotkey_id})")
+                print(f"[HOTKEY] failed to register {vk} (id {hid})")
 
     def unregister_hotkeys(self):
         if not HAS_WINDOWS_HOTKEYS:
             return
-
-        for hotkey_id in self.registered_ids:
+        for hid in list(self.registered_ids):
             try:
-                USER32.UnregisterHotKey(self.hwnd, hotkey_id)
+                USER32.UnregisterHotKey(self.hwnd, hid)
             except Exception:
                 pass
         self.registered_ids.clear()
 
-    def _message_to_ctypes_ptr(self, message):
-        if isinstance(message, tuple) and message:
-            message = message[0]
-
-        try:
-            return ctypes.c_void_p(int(message))
-        except Exception:
-            return None
-
     def nativeEventFilter(self, eventType, message):
         if sys.platform != "win32":
             return False, 0
-
-        if eventType not in ("windows_generic_MSG", b"windows_generic_MSG"):
-            return False, 0
-
-        msg_ptr = self._message_to_ctypes_ptr(message)
-        if not msg_ptr:
-            return False, 0
-
         try:
-            msg = ctypes.cast(msg_ptr, ctypes.POINTER(wintypes.MSG)).contents
+            msg = ctypes.cast(message.__int__(), ctypes.POINTER(wintypes.MSG)).contents
         except Exception:
-            return False, 0
+            # Fallback for QVariant / MsgIn
+            msg = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
 
-        if msg.message != WM_HOTKEY:
-            return False, 0
-
-        hotkey_id = msg.wParam
-        if hotkey_id == 1:
-            self.window.play_pause_track.emit()
-        elif hotkey_id == 2:
-            self.window.next_track.emit()
-        elif hotkey_id == 3:
-            self.window.prev_track.emit()
-
-        return True, 0
+        if msg.message == WM_HOTKEY:
+            hid = msg.wParam
+            if hid == 1:
+                self.window.play_pause_track.emit()
+                return True, 0
+        return False, 0
 
 
 def install_media_hotkeys(app, window):
-    """Install global media hotkeys on Windows if available."""
     if not HAS_WINDOWS_HOTKEYS:
         return None
-
-    media_filter = MediaHotkeyFilter(window)
-    app.installNativeEventFilter(media_filter)
-    return media_filter
+    f = MediaHotkeyFilter(window)
+    app.installNativeEventFilter(f)
+    return f

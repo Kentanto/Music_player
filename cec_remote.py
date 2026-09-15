@@ -40,6 +40,9 @@ CEC_CODE_ACTIONS = {
     0x02: "navigation:down",
     0x03: "navigation:left",
     0x04: "navigation:right",
+    # --- Channel controls ---
+    0x30: "context_menu_requested",   # Channel Up  -> right click / context menu
+    0x31: "context_menu_requested",   # Channel Down -> right click / context menu
     # --- Transport controls ---
     0x41: "play_pause",         # Volume Up (LG / some vendors use as Play)
     0x44: "play_pause",         # Play
@@ -52,6 +55,10 @@ CEC_CODE_ACTIONS = {
     0x4B: "next_track",         # Skip Forward
     0x4C: "previous_track",     # Skip Backward
     # --- Function Select (One Touch Play) ---
+    0x50: "fullscreen_requested",     # Function Red / F1 -> fullscreen toggle
+    0x51: "fullscreen_requested",     # Function Green / F2 -> fullscreen toggle
+    0x52: "fullscreen_requested",     # Function Yellow / F3 -> fullscreen toggle
+    0x53: "fullscreen_requested",     # Function Blue / F4 -> fullscreen toggle
     0x60: "play_pause",         # Play Function
     0x61: "play_pause",         # Pause-Play Function
     0x62: "stop_requested",     # Record Function
@@ -82,6 +89,8 @@ class CecRemoteListener(QThread):
     back_requested = Signal()
     navigation = Signal(str)
     select_requested = Signal()
+    fullscreen_requested = Signal()
+    context_menu_requested = Signal()
 
     def __init__(self, parent=None, *, device: str | None = None,
                  phys_addr: str | None = None):

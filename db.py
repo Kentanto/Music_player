@@ -740,16 +740,17 @@ def get_all_songs_from_all_playlists():
     """Return de-duplicated list of all songs across every playlist, preserving first appearance order."""
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
-            "SELECT ps.file_path FROM playlist_songs ps "
+            "SELECT ps.file_path, s.url FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.position"
         ).fetchall()
     seen = set()
     result = []
     for row in rows:
-        fp = row[0]
-        if fp not in seen:
-            seen.add(fp)
-            result.append(fp)
+        url = row[1]
+        key = url if url else row[0]
+        if key not in seen:
+            seen.add(key)
+            result.append(row[0])
     return result
 
 
@@ -757,16 +758,17 @@ def get_all_playlist_songs_flat():
     """Return all unique songs across every playlist as (title, url, file_path) rows, preserving first appearance order."""
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
-            "SELECT s.title, s.url, ps.file_path FROM playlist_songs ps "
+            "SELECT s.title, s.url, ps.file_path, ps.song_id FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.id"
         ).fetchall()
     seen = set()
     result = []
     for row in rows:
-        fp = row[2]
-        if fp not in seen:
-            seen.add(fp)
-            result.append(row)
+        url = row[1]
+        key = url if url else row[2]
+        if key not in seen:
+            seen.add(key)
+            result.append(row[:3])
 
     # Merge in any audio files present in playlist folders but not yet tracked in the DB
     audio_extensions = {".mp3", ".m4a", ".opus", ".wav", ".aac"}
