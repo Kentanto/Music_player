@@ -241,12 +241,6 @@ if sys.platform == "win32":
         def __init__(self, listener):
             super().__init__()
             self._listener = listener
-            self._last_cmd = None
-            self._last_cmd_time = 0.0
-            self._cmd_debounce = 0.12
-            self._last_vk = None
-            self._last_vk_time = 0.0
-            self._vk_debounce = 0.08
 
         def nativeEventFilter(self, eventType, message):
             msg = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
@@ -258,11 +252,6 @@ if sys.platform == "win32":
 
         def _on_appcommand(self, msg):
             cmd = (msg.lParam >> 16) & 0x0FFF
-            now = time.monotonic()
-            if cmd == self._last_cmd and (now - self._last_cmd_time) < self._cmd_debounce:
-                return True, 1
-            self._last_cmd = cmd
-            self._last_cmd_time = now
             print(f"[MOCUTE] APPCOMMAND cmd={cmd}", flush=True)
 
             # MOCUTE vendor-specific codes
@@ -274,35 +263,26 @@ if sys.platform == "win32":
                 return True, 1
 
             _map = {
-                self.AC_MEDIA_NEXT:  "next_track",
-                self.AC_MEDIA_PREV:  "previous_track",
-                self.AC_MEDIA_PLAY:  "play_pause",
-                self.AC_MEDIA_STOP:  "stop_requested",
+                self.AC_MEDIA_NEXT: "next_track",
+                self.AC_MEDIA_PREV: "previous_track",
+                self.AC_MEDIA_STOP: "stop_requested",
             }
             action = _map.get(cmd)
+            if not action and cmd in {self.AC_MEDIA_PLAY, self.AC_MEDIA_PLAY2, self.AC_MEDIA_PAUSE}:
+                action = "play_pause"
+
             if action:
                 self._listener._dispatch(action)
                 return True, 1
-            return True, 1   # swallow unknown vendor commands
+            return False, 0   # let unhandled APPCOMMANDS through to Qt / OS
 
         def _on_keydown(self, msg):
+            """Only intercept dedicated media VKs so normal keyboard typing isn't broken."""
             vk = msg.wParam
-            now = time.monotonic()
-            if vk == self._last_vk and (now - self._last_vk_time) < self._vk_debounce:
-                return True, 1
-            self._last_vk = vk
-            self._last_vk_time = now
-            print(f"[MOCUTE] KEYDOWN VK={vk} (0x{vk:02X})", flush=True)
+            if vk not in {self.VK_MEDIA_NEXT, self.VK_MEDIA_PREV, self.VK_MEDIA_STOP, self.VK_MEDIA_PLAY}:
+                return False, 0
 
             _vk_map = {
-                self.VK_RETURN:     "select_requested",
-                self.VK_SPACE:      "play_pause",
-                self.VK_BACK:       "back_requested",
-                self.VK_ESCAPE:     "back_requested",
-                self.VK_UP:         "navigation:up",
-                self.VK_DOWN:       "navigation:down",
-                self.VK_LEFT:       "navigation:left",
-                self.VK_RIGHT:      "navigation:right",
                 self.VK_MEDIA_NEXT: "next_track",
                 self.VK_MEDIA_PREV: "previous_track",
                 self.VK_MEDIA_STOP: "stop_requested",
@@ -312,7 +292,7 @@ if sys.platform == "win32":
             if action:
                 self._listener._dispatch(action)
                 return True, 1
-            return False, 0   # let normal keyboard keys through
+            return False, 0
 
 
     class _WindowsBackend:

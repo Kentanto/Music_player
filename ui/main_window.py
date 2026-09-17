@@ -197,7 +197,9 @@ class MainWindow(QMainWindow):
 
             # ── Layer 2 enter: Return / Space / Enter = activate ──
             if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
-                if isinstance(target, QLineEdit) and key == Qt.Key_Space:
+                # When a text field has focus, let Qt handle these keys normally
+                # (Enter submits a search, Space inserts a character, etc.)
+                if isinstance(target, QLineEdit):
                     return super().eventFilter(watched, event)
                 print(f"[NAV] key event: {key} on {self._target_name(target)} -> activate", flush=True)
                 self.activate_highlighted()

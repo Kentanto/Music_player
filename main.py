@@ -696,6 +696,9 @@ class MusicAppController:
 
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
+        # Clear search inputs when opening a playlist (fresh context)
+        self.window.search_panel.clear()
+        self.window.queue_panel.filter_input.clear()
         self.window.queue_panel.sort_combo.blockSignals(True)
         self.window.queue_panel.sort_combo.setCurrentText(
             "Shuffled" if self.player.shuffle_enabled else "Date Added"
