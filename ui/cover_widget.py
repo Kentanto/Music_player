@@ -16,22 +16,6 @@ class CoverWidget(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setAlignment(Qt.AlignCenter)
         
-        # Song title
-        self.title_label = QLabel("No track selected")
-        self.title_label.setFont(QFont("Arial", 14, QFont.Bold))
-        self.title_label.setAlignment(Qt.AlignCenter)
-        self.title_label.setWordWrap(True)
-        self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
-        layout.addWidget(self.title_label)
-
-        # Artist
-        self.artist_label = QLabel("")
-        self.artist_label.setFont(QFont("Arial", 10))
-        self.artist_label.setAlignment(Qt.AlignCenter)
-        self.artist_label.setWordWrap(True)
-        self.artist_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
-        layout.addWidget(self.artist_label)
-
         # Let the artwork fill the available pane instead of letterboxing.
         self.cover_label = QLabel("🎵")
         self.cover_label.setFont(QFont("Arial", 80))
@@ -42,7 +26,23 @@ class CoverWidget(QWidget):
             "QLabel { background-color: #121212; border: 1px solid #404040; }"
         )
         layout.addWidget(self.cover_label)
-
+        
+        # Song title
+        self.title_label = QLabel("No track selected")
+        self.title_label.setFont(QFont("Arial", 14, QFont.Bold))
+        self.title_label.setAlignment(Qt.AlignCenter)
+        self.title_label.setWordWrap(True)
+        self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        layout.addWidget(self.title_label)
+        
+        # Artist
+        self.artist_label = QLabel("")
+        self.artist_label.setFont(QFont("Arial", 10))
+        self.artist_label.setAlignment(Qt.AlignCenter)
+        self.artist_label.setWordWrap(True)
+        self.artist_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
+        layout.addWidget(self.artist_label)
+        
         layout.addStretch()
         
         self.setLayout(layout)
