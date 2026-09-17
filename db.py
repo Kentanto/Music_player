@@ -602,7 +602,7 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
     return file_path
 
 
-def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
+def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_metadata_update=False):
     from yt_dlp import YoutubeDL
     import warnings
 
@@ -660,7 +660,8 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
             if os.path.exists(target_path):
                 if use_yt_thumbnail:
                     download_thumbnail(info.get("thumbnail"), target_path)
-                update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
+                if not skip_metadata_update:
+                    update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                 return target_path
 
             for ext in ["mp3", "m4a", "opus", "wav", "aac"]:
@@ -668,7 +669,8 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
                 if os.path.exists(alt_path):
                     if use_yt_thumbnail:
                         download_thumbnail(info.get("thumbnail"), alt_path)
-                    update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
+                    if not skip_metadata_update:
+                        update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                     return alt_path
     except Exception as error:
         print(f"[audio-download] exception: {type(error).__name__}: {error}", flush=True)

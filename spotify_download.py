@@ -28,14 +28,28 @@ SEARCH_RESULTS = 20
 NUM_WORKERS = 3
 FAILURE_LOG_NAME = "failed_songs.txt"
 
-
-_BAD_KEYWORDS = [
-    "live", "cover", "karaoke", "reaction", "review", "instrumental",
-    "8d", "slowed", "reverb", "acoustic", "orchestra", "tribute",
-    "mashup", "remix", "extended", "loop", "1 hour", "10 hours",
-    "nightcore", "bass boosted", "hour version",
+# These words usually mean an altered, fake or wrong version; we penalise them HEAVILY.
+_CRITICAL_BAD = [
+    "karaoke", "instrumental", "backing track", "cover", "live", "react",
+    "reaction", "trolling", "review", "tutorial", "how to", "howto",
+    "parody", "meme", "memes", "funny", "nightcore", "daycore", "8d audio",
+    "8d", " slowed", "sped up", "speed up", "nightcore", "bass boosted",
+    "1 hour", "10 hours", "hour version", "loop", "chipmunk", "earrape",
+    "high pitch", "pitch shifted", "reverb", "clean", "dirty", "demo",
+    "acoustic", "unplugged", "live session", "radio edit", "edit", "remix",
+    "mashup", "extended", "bootleg", "flip", "sped", "rewind",
 ]
-_GOOD_KEYWORDS = ["official", "topic", "music video"]
+
+# Softer negative signals (still bad, but worth less penalty).
+_BAD_KEYWORDS = [
+    "version", "vs", "vs.", "not", "orchestra", "tribute",
+    "remastered", "remaster", "screwed", "chopped", "hour loop",
+    "recording", "no vocals", "off vocal", "midi", "synthesia",
+]
+
+_GOOD_KEYWORDS = ["official", "topic", "music video", "lyrics", "audio"]
+_OFFICIAL_CHANNELS = ["vevo", "official", "topic"]
+_STRONG_OFFICIAL = {"official music video", "official audio", "official video"}
 
 
 def _playlist_id(url):
@@ -51,47 +65,89 @@ def _spotify_client():
 
 def _score_result(entry, track_name, artist_name, expected_seconds=None):
     """Score a YouTube result; higher is better."""
-    title = (entry.get("title") or "").lower()
-    uploader = (entry.get("uploader") or entry.get("channel") or "").lower()
+    title = (entry.get("title") or "").lower().strip()
+    uploader = (entry.get("uploader") or entry.get("channel") or "").lower().strip()
     score = 0
 
     track_name = track_name.lower().strip()
     artist_name = artist_name.lower().strip()
 
+    # --- Exact / strong matches ---
     if track_name in title:
+        score += 20
+    if artist_name in title:
+        score += 12
+    if artist_name in uploader:
         score += 15
-    if artist_name in title or artist_name in uploader:
-        score += 10
 
+    # --- Official channel / uploader bonus ---
+    for official in _OFFICIAL_CHANNELS:
+        if official in uploader:
+            score += 8
+            break
+
+    # --- Strong official title phrase bonus ---
+    for phrase in _STRONG_OFFICIAL:
+        if phrase in title:
+            score += 6
+            break
+
+    # --- Penalize critical karaoke/parody keywords so they never win ---
+    for word in _CRITICAL_BAD:
+        if word in title:
+            score -= 100
+
+    # --- Penalize other bad keywords ---
     for word in _BAD_KEYWORDS:
         if word in title:
-            score -= 10
+            score -= 15
+
+    # --- Good keyword bonus ---
     for word in _GOOD_KEYWORDS:
         if word in title:
-            score += 4
+            score += 5
 
+    # --- Prefer videos where title is close to just track + artist ---
+    # Penalise extra words in title (longer titles are often compilations / parodies / karaoke)
+    extra_words = len(title.split()) - len(track_name.split()) - len(artist_name.split())
+    if extra_words > 3:
+        score -= min(extra_words * 2, 20)
+
+    # --- Duration checks ---
     duration = entry.get("duration")
     if duration:
         if duration < MIN_VIDEO_DURATION:
-            score -= 15
-        elif duration > MAX_VIDEO_DURATION:
             score -= 20
+        elif duration > MAX_VIDEO_DURATION:
+            score -= 25
         elif 120 <= duration <= 420:
-            score += 5
+            score += 6
 
+    # --- Strong duration match bonus ---
     if expected_seconds and duration:
         diff = abs(duration - expected_seconds)
         if diff < 5:
-            score += 25
+            score += 35
         elif diff < 15:
-            score += 20
+            score += 25
         elif diff < 30:
-            score += 10
+            score += 15
         elif diff < 60:
-            score += 5
+            score += 8
 
+    # --- View count popularity bonus (official videos often have views) ---
+    view_count = entry.get("view_count") or 0
+    if isinstance(view_count, int) and view_count > 0:
+        if view_count > 10_000_000:
+            score += 8
+        elif view_count > 1_000_000:
+            score += 5
+        elif view_count > 100_000:
+            score += 2
+
+    # --- If track name completely missing from title, heavy penalty ---
     if track_name not in title:
-        score -= 5
+        score -= 15
 
     return score
 
@@ -106,9 +162,15 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
         "ignoreerrors": True,
         **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
     }
+    # Use quotes around track name to reduce irrelevant matches.
+    # Queries ordered from most precise to broadest.
+    safe_track = track_name.replace('"', '')
+    safe_artist = artist_name.replace('"', '')
     queries = [
-        f"ytsearch{SEARCH_RESULTS}:{track_name} {artist_name}",
-        f"ytsearch{SEARCH_RESULTS}:{track_name} {artist_name} official audio",
+        f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist}',
+        f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist} official audio',
+        f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist} lyrics',
+        f'ytsearch{SEARCH_RESULTS}:{safe_track} {safe_artist}',  # last resort broad query
     ]
 
     all_candidates = []
@@ -197,7 +259,8 @@ def import_playlist(playlist_url, progress=None):
         artist = artists[0].get("name") if artists else "Unknown artist"
         if artist:
             artist = artist.strip()
-        song_name = f"{name} - {artist}"
+        # Use the clean track name as the download title so the DB title stays
+        # separate from the artist field.
         duration_ms = track.get("duration_ms")
         expected_seconds = duration_ms / 1000.0 if duration_ms else None
 
@@ -205,7 +268,7 @@ def import_playlist(playlist_url, progress=None):
             candidate = get_best_youtube_result(name, artist, expected_seconds)
             if not candidate:
                 raise RuntimeError("No short YouTube match found")
-            file_path = download_audio_to_folder(candidate["url"], song_name, folder, use_yt_thumbnail=False)
+            file_path = download_audio_to_folder(candidate["url"], name, folder, use_yt_thumbnail=False, skip_metadata_update=True)
             if not file_path:
                 raise RuntimeError("Audio download failed")
             images = track.get("album", {}).get("images") or []
@@ -213,11 +276,11 @@ def import_playlist(playlist_url, progress=None):
             add_downloaded_song_to_playlist(
                 name, candidate["url"], playlist_id, file_path, artist, thumbnail
             )
-            _progress_step(song_name)
+            _progress_step(f"{name} - {artist}")
             return None
         except Exception as error:
-            _progress_step(song_name)
-            return song_name, str(error)
+            _progress_step(f"{name} - {artist}")
+            return f"{name} - {artist}", str(error)
 
     with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
         futures = {executor.submit(_process_one, item): item for item in tracks}
