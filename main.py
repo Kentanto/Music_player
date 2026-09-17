@@ -118,6 +118,7 @@ class MusicAppController:
         self.window.seek_delta_requested.connect(self.handle_seek_delta)
         self.window.fullscreen_requested.connect(self.handle_fullscreen)
         self.window.stop_requested.connect(self.player.stop)
+        self.window.volume_mute.connect(self.handle_volume_mute)
 
         fullscreen = self.window.fullscreen_player
         fullscreen.play_pause_clicked.connect(self.handle_play_pause)
@@ -268,6 +269,9 @@ class MusicAppController:
         self.player.previous()
         self._refresh_queue_display()
         self._update_now_playing()
+
+    def handle_volume_mute(self):
+        self.player.toggle_mute()
 
     def _resolve_url(self, item):
         if not item:

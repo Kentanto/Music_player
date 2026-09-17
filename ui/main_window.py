@@ -33,6 +33,8 @@ class MainWindow(QMainWindow):
     add_to_playlist = Signal()
     import_list_requested = Signal()
     open_playlist_requested = Signal(object)
+    stop_requested = Signal()
+    volume_mute = Signal()
     volume_changed = Signal(int)
     seek_requested = Signal(float)
     seek_delta_requested = Signal(int)
@@ -124,13 +126,14 @@ class MainWindow(QMainWindow):
         fullscreen_shortcut.setContext(Qt.ApplicationShortcut)
         fullscreen_shortcut.activated.connect(self.fullscreen_requested.emit)
 
-        # Media play/pause shortcuts still work for real keyboards.
-        # MediaNext / MediaPrevious are intentionally NOT mapped here.
-        # On Windows they are intercepted via WM_APPCOMMAND in media_hotkeys.py
-        # and remapped to spatial navigation (left/right).
+        # Standard media-key shortcuts for keyboards / OS media events
         QShortcut(QKeySequence(Qt.Key_MediaPlay), self).activated.connect(self.play_pause_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaPause), self).activated.connect(self.play_pause_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.play_pause_track.emit)
+        QShortcut(QKeySequence(Qt.Key_MediaNext), self).activated.connect(self.next_track.emit)
+        QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.prev_track.emit)
+        QShortcut(QKeySequence(Qt.Key_MediaStop), self).activated.connect(self.stop_requested.emit)
+        QShortcut(QKeySequence(Qt.Key_VolumeMute), self).activated.connect(self.volume_mute.emit)
 
 
     # ───────────────────── Layer-2 interaction state ─────────────────────

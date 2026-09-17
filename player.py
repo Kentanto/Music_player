@@ -281,6 +281,9 @@ class Player:
         max_gain = 0.50
         return ((10 ** normalized - 1) / 9) * max_gain
 
+    def toggle_mute(self):
+        self.audio.setMuted(not self.audio.isMuted())
+
     def _on_audio_outputs_changed(self):
         """Switch to the new default audio output device when system default changes."""
         new_device = self._media_devices.defaultAudioOutput()

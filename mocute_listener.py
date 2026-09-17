@@ -56,8 +56,8 @@ if HAS_EVDEV:
         ecodes.KEY_RIGHT:       "navigation:right",
         ecodes.KEY_VOLUMEUP:    "volume_up",
         ecodes.KEY_VOLUMEDOWN:  "volume_down",
-        ecodes.KEY_NEXTSONG:    "navigation:right",
-        ecodes.KEY_PREVIOUSSONG: "navigation:left",
+        ecodes.KEY_NEXTSONG:    "next_track",
+        ecodes.KEY_PREVIOUSSONG: "previous_track",
         ecodes.KEY_ENTER:       "select_requested",
         ecodes.KEY_OK:          "select_requested",
         ecodes.KEY_BACK:        "back_requested",
@@ -274,12 +274,10 @@ if sys.platform == "win32":
                 return True, 1
 
             _map = {
-                self.AC_MEDIA_NEXT:  "navigation:right",
-                self.AC_MEDIA_PREV:  "navigation:left",
+                self.AC_MEDIA_NEXT:  "next_track",
+                self.AC_MEDIA_PREV:  "previous_track",
                 self.AC_MEDIA_PLAY:  "play_pause",
                 self.AC_MEDIA_STOP:  "stop_requested",
-                self.AC_VOLUME_UP:   "volume_up",
-                self.AC_VOLUME_DOWN: "volume_down",
             }
             action = _map.get(cmd)
             if action:
@@ -297,21 +295,18 @@ if sys.platform == "win32":
             print(f"[MOCUTE] KEYDOWN VK={vk} (0x{vk:02X})", flush=True)
 
             _vk_map = {
-                self.VK_RETURN:      "select_requested",
-                self.VK_SPACE:       "play_pause",
-                self.VK_BACK:        "back_requested",
-                self.VK_ESCAPE:      "back_requested",
-                self.VK_UP:          "navigation:up",
-                self.VK_DOWN:        "navigation:down",
-                self.VK_LEFT:        "navigation:left",
-                self.VK_RIGHT:       "navigation:right",
-                self.VK_VOLUME_UP:   "volume_up",
-                self.VK_VOLUME_DOWN: "volume_down",
-                self.VK_VOLUME_MUTE: "fullscreen_requested",
-                self.VK_MEDIA_NEXT:  "navigation:right",
-                self.VK_MEDIA_PREV:  "navigation:left",
-                self.VK_MEDIA_STOP:  "stop_requested",
-                self.VK_MEDIA_PLAY:  "play_pause",
+                self.VK_RETURN:     "select_requested",
+                self.VK_SPACE:      "play_pause",
+                self.VK_BACK:       "back_requested",
+                self.VK_ESCAPE:     "back_requested",
+                self.VK_UP:         "navigation:up",
+                self.VK_DOWN:       "navigation:down",
+                self.VK_LEFT:       "navigation:left",
+                self.VK_RIGHT:      "navigation:right",
+                self.VK_MEDIA_NEXT: "next_track",
+                self.VK_MEDIA_PREV: "previous_track",
+                self.VK_MEDIA_STOP: "stop_requested",
+                self.VK_MEDIA_PLAY: "play_pause",
             }
             action = _vk_map.get(vk)
             if action:
