@@ -17,6 +17,7 @@ class SearchPanel(QWidget):
         
         # Search bar
         self.search_bar = QLineEdit()
+        self.search_bar.setObjectName("search_bar")
         self.search_bar.setPlaceholderText("Search YouTube...")
         self.search_bar.returnPressed.connect(self.on_search)
         layout.addWidget(self.search_bar)

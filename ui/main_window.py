@@ -33,12 +33,16 @@ class MainWindow(QMainWindow):
     add_to_playlist = Signal()
     import_list_requested = Signal()
     open_playlist_requested = Signal(object)
+    stop_requested = Signal()
+    volume_mute = Signal()
     volume_changed = Signal(int)
     seek_requested = Signal(float)
     seek_delta_requested = Signal(int)
     fullscreen_requested = Signal()
     track_selected = Signal(object)
     back_requested = Signal()
+    stop_requested = Signal()
+    select_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -122,11 +126,15 @@ class MainWindow(QMainWindow):
         fullscreen_shortcut.setContext(Qt.ApplicationShortcut)
         fullscreen_shortcut.activated.connect(self.fullscreen_requested.emit)
 
+        # Standard media-key shortcuts for keyboards / OS media events
         QShortcut(QKeySequence(Qt.Key_MediaPlay), self).activated.connect(self.play_pause_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaPause), self).activated.connect(self.play_pause_track.emit)
+        QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.play_pause_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaNext), self).activated.connect(self.next_track.emit)
         QShortcut(QKeySequence(Qt.Key_MediaPrevious), self).activated.connect(self.prev_track.emit)
-        QShortcut(QKeySequence(Qt.Key_MediaTogglePlayPause), self).activated.connect(self.play_pause_track.emit)
+        QShortcut(QKeySequence(Qt.Key_MediaStop), self).activated.connect(self.stop_requested.emit)
+        QShortcut(QKeySequence(Qt.Key_VolumeMute), self).activated.connect(self.volume_mute.emit)
+
 
     # ───────────────────── Layer-2 interaction state ─────────────────────
 
@@ -189,7 +197,9 @@ class MainWindow(QMainWindow):
 
             # ── Layer 2 enter: Return / Space / Enter = activate ──
             if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
-                if isinstance(target, QLineEdit) and key == Qt.Key_Space:
+                # When a text field has focus, let Qt handle these keys normally
+                # (Enter submits a search, Space inserts a character, etc.)
+                if isinstance(target, QLineEdit):
                     return super().eventFilter(watched, event)
                 print(f"[NAV] key event: {key} on {self._target_name(target)} -> activate", flush=True)
                 self.activate_highlighted()
@@ -613,9 +623,25 @@ class MainWindow(QMainWindow):
 
         elif isinstance(target, QLineEdit):
             if target is self.search_panel.search_bar:
-                query = target.text().strip()
-                if query:
-                    self.search_requested.emit(query)
+                self.search_panel.on_search()
+            elif target is self.queue_panel.filter_input:
+                item = self.queue_panel.get_current_item()
+                if item is None and self.queue_panel.list_widget.count():
+                    # Find the currently-playing item, else select row 0
+                    found = -1
+                    for i in range(self.queue_panel.list_widget.count()):
+                        widget_item = self.queue_panel.list_widget.item(i)
+                        if widget_item and widget_item.font().bold():
+                            found = i
+                            break
+                    row = found if found >= 0 else 0
+                    self.queue_panel.list_widget.setCurrentRow(row)
+                    item = self.queue_panel.get_current_item()
+                if item:
+                    if item.get("type") == "playlist":
+                        self.open_playlist_requested.emit(item.get("playlist_id"))
+                    else:
+                        self.play_track_index.emit(item)
             else:
                 target.setFocus(Qt.OtherFocusReason)
                 target.selectAll()

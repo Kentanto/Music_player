@@ -602,7 +602,7 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
     return file_path
 
 
-def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
+def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_metadata_update=False):
     from yt_dlp import YoutubeDL
     import warnings
 
@@ -660,7 +660,8 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
             if os.path.exists(target_path):
                 if use_yt_thumbnail:
                     download_thumbnail(info.get("thumbnail"), target_path)
-                update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
+                if not skip_metadata_update:
+                    update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                 return target_path
 
             for ext in ["mp3", "m4a", "opus", "wav", "aac"]:
@@ -668,7 +669,8 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True):
                 if os.path.exists(alt_path):
                     if use_yt_thumbnail:
                         download_thumbnail(info.get("thumbnail"), alt_path)
-                    update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
+                    if not skip_metadata_update:
+                        update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                     return alt_path
     except Exception as error:
         print(f"[audio-download] exception: {type(error).__name__}: {error}", flush=True)
@@ -740,16 +742,17 @@ def get_all_songs_from_all_playlists():
     """Return de-duplicated list of all songs across every playlist, preserving first appearance order."""
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
-            "SELECT ps.file_path FROM playlist_songs ps "
+            "SELECT ps.file_path, s.url FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.position"
         ).fetchall()
     seen = set()
     result = []
     for row in rows:
-        fp = row[0]
-        if fp not in seen:
-            seen.add(fp)
-            result.append(fp)
+        url = row[1]
+        key = url if url else row[0]
+        if key not in seen:
+            seen.add(key)
+            result.append(row[0])
     return result
 
 
@@ -757,16 +760,17 @@ def get_all_playlist_songs_flat():
     """Return all unique songs across every playlist as (title, url, file_path) rows, preserving first appearance order."""
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
-            "SELECT s.title, s.url, ps.file_path FROM playlist_songs ps "
+            "SELECT s.title, s.url, ps.file_path, ps.song_id FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.id"
         ).fetchall()
     seen = set()
     result = []
     for row in rows:
-        fp = row[2]
-        if fp not in seen:
-            seen.add(fp)
-            result.append(row)
+        url = row[1]
+        key = url if url else row[2]
+        if key not in seen:
+            seen.add(key)
+            result.append(row[:3])
 
     # Merge in any audio files present in playlist folders but not yet tracked in the DB
     audio_extensions = {".mp3", ".m4a", ".opus", ".wav", ".aac"}
