@@ -216,6 +216,8 @@ class QueuePanel(QWidget):
         self.current_item_source = None
         self.queued_next_source = None
         self._reset_scroll_on_refresh = False
+        self._commit_index = 3  # "Date Added"
+        self._reverse = False
         self.init_ui()
 
     def init_ui(self):
@@ -235,7 +237,8 @@ class QueuePanel(QWidget):
         self.sort_combo.addItems(["Sort by", "Title", "Duration", "Date Added", "Shuffled"])
         self.sort_combo.model().item(0).setEnabled(False)
         self.sort_combo.setCurrentText("Date Added")
-        self.sort_combo.currentIndexChanged.connect(self._refresh_display)
+        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        self.sort_combo.activated.connect(self._on_sort_activated)
         controls.addWidget(self.sort_combo)
 
         layout.addLayout(controls)
@@ -289,6 +292,32 @@ class QueuePanel(QWidget):
             self._reset_scroll_on_refresh = True
         self._refresh_display()
 
+    def set_sort_mode(self, mode):
+        """Programmatically set the sort mode and sync internal state."""
+        self.sort_combo.blockSignals(True)
+        self.sort_combo.setCurrentText(mode)
+        self.sort_combo.blockSignals(False)
+        self._commit_index = self.sort_combo.currentIndex()
+        self._reverse = False
+        self._refresh_display()
+
+    def _on_sort_changed(self):
+        """Live preview when navigating the combo (arrow keys), no reverse applied."""
+        self._reverse = False
+        self._refresh_display()
+
+    def _on_sort_activated(self, index):
+        """Committed selection: toggle reverse if clicking the same option again."""
+        sort_mode = self.sort_combo.itemText(index)
+        if sort_mode == "Sort by":
+            return
+        if index == self._commit_index and sort_mode != "Shuffled":
+            self._reverse = not self._reverse
+        else:
+            self._reverse = False
+            self._commit_index = index
+        self._refresh_display()
+
     def _refresh_display(self):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
@@ -303,11 +332,11 @@ class QueuePanel(QWidget):
         items = list(self.items_data)
 
         if sort_mode == "Title":
-            items.sort(key=lambda x: str(x.get("title", "")).casefold())
+            items.sort(key=lambda x: str(x.get("title", "")).casefold(), reverse=self._reverse)
         elif sort_mode == "Duration":
-            items.sort(key=lambda x: x.get("duration") or float("inf"))
+            items.sort(key=lambda x: x.get("duration") or float("inf"), reverse=self._reverse)
         elif sort_mode == "Date Added":
-            items.sort(key=lambda x: x.get("added_at") or "")
+            items.sort(key=lambda x: x.get("added_at") or "", reverse=self._reverse)
         elif sort_mode == "Shuffled":
             # Items are already in the player's shuffled playback order;
             # do not re-sort them here.

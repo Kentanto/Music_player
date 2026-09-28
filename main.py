@@ -62,7 +62,7 @@ class MusicAppController:
         saved_shuffle = get_app_setting("shuffle_enabled", "False")
         self.player.shuffle_enabled = saved_shuffle.lower() == "true"
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
-        self.window.queue_panel.sort_combo.setCurrentText(
+        self.window.queue_panel.set_sort_mode(
             "Shuffled" if self.player.shuffle_enabled else "Date Added"
         )
         
@@ -262,9 +262,7 @@ class MusicAppController:
         if not queue_urls:
             self.player.shuffle_enabled = False
             self.window.player_bar.set_shuffle_state(False)
-            self.window.queue_panel.sort_combo.blockSignals(True)
-            self.window.queue_panel.sort_combo.setCurrentText("Date Added")
-            self.window.queue_panel.sort_combo.blockSignals(False)
+            self.window.queue_panel.set_sort_mode("Date Added")
             set_app_setting("shuffle_enabled", "False")
             return
 
@@ -276,11 +274,9 @@ class MusicAppController:
         self.player.set_queue(queue_urls, current_item=current_item)
         self.player.toggle_shuffle(enabled)
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
-        self.window.queue_panel.sort_combo.blockSignals(True)
-        self.window.queue_panel.sort_combo.setCurrentText(
+        self.window.queue_panel.set_sort_mode(
             "Shuffled" if self.player.shuffle_enabled else "Date Added"
         )
-        self.window.queue_panel.sort_combo.blockSignals(False)
         set_app_setting("shuffle_enabled", str(bool(self.player.shuffle_enabled)))
         self.active_queue_urls = list(queue_urls)
         self._refresh_queue_display()
@@ -332,7 +328,38 @@ class MusicAppController:
             )
             return
 
-        self.spotify_import_worker = SpotifyImportWorker(playlist_url, self.window)
+        # Ask whether to create a new playlist or add to an existing one
+        target_playlist_id = None
+        choice_box = QMessageBox(self.window)
+        choice_box.setWindowTitle("Import Destination")
+        choice_box.setText("Where should the songs go?")
+        new_btn = choice_box.addButton("New Playlist", QMessageBox.AcceptRole)
+        existing_btn = choice_box.addButton("Existing Playlist", QMessageBox.ActionRole)
+        choice_box.addButton("Cancel", QMessageBox.RejectRole)
+        choice_box.exec()
+        clicked = choice_box.clickedButton()
+
+        if clicked == existing_btn:
+            playlists = get_playlists()
+            if not playlists:
+                QMessageBox.information(
+                    self.window, "Import", "No existing playlists found. Creating a new one instead."
+                )
+            else:
+                names = [p[1] for p in playlists]
+                name, ok = QInputDialog.getItem(
+                    self.window, "Select Playlist", "Add songs to:", names, 0, False
+                )
+                if not ok:
+                    return
+                for p in playlists:
+                    if p[1] == name:
+                        target_playlist_id = p[0]
+                        break
+        elif clicked is None or clicked != new_btn:
+            return  # user cancelled
+
+        self.spotify_import_worker = SpotifyImportWorker(playlist_url, target_playlist_id, self.window)
         self.spotify_import_worker.progress.connect(
             lambda current, total, title: print(f"[spotify] [{current}/{total}] {title}", flush=True)
         )
@@ -663,11 +690,9 @@ class MusicAppController:
 
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
-        self.window.queue_panel.sort_combo.blockSignals(True)
-        self.window.queue_panel.sort_combo.setCurrentText(
+        self.window.queue_panel.set_sort_mode(
             "Shuffled" if self.player.shuffle_enabled else "Date Added"
         )
-        self.window.queue_panel.sort_combo.blockSignals(False)
         if playlist_id == "all":
             playlist_songs = get_all_playlist_songs_flat()
         else:

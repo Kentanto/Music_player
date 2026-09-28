@@ -15,6 +15,7 @@ from db import (
     add_downloaded_song_to_playlist,
     create_playlist,
     download_audio_to_folder,
+    get_playlist_by_id,
 )
 
 # These values are portable across operating systems. Keep them in this small
@@ -165,16 +166,27 @@ def _tracks(client, playlist_url):
     return tracks
 
 
-def import_playlist(playlist_url, progress=None):
-    """Download a Spotify playlist and return (playlist_id, failures, name)."""
-    playlist_id = _playlist_id(playlist_url)
-    client = _spotify_client()
-    playlist = client.playlist(playlist_id, fields="name")
-    playlist_row = create_playlist(playlist.get("name") or PLAYLIST_NAME)
-    if not playlist_row:
-        raise RuntimeError("Could not create the import playlist")
+def import_playlist(playlist_url, target_playlist_id=None, progress=None):
+    """Download a Spotify playlist and return (playlist_id, failures, name).
 
-    playlist_id, playlist_name, folder = playlist_row
+    If *target_playlist_id* is given, songs are appended to that existing
+    playlist instead of creating a new one.
+    """
+    spotify_id = _playlist_id(playlist_url)
+    client = _spotify_client()
+    spotify_meta = client.playlist(spotify_id, fields="name")
+    spotify_name = spotify_meta.get("name") or PLAYLIST_NAME
+
+    if target_playlist_id is not None:
+        playlist_row = get_playlist_by_id(target_playlist_id)
+        if not playlist_row:
+            raise RuntimeError(f"Playlist id={target_playlist_id} does not exist")
+        playlist_id, playlist_name, folder = playlist_row
+    else:
+        playlist_row = create_playlist(spotify_name)
+        if not playlist_row:
+            raise RuntimeError("Could not create the import playlist")
+        playlist_id, playlist_name, folder = playlist_row
     failure_log = _failure_log_path(folder)
     failure_log.touch(exist_ok=True)
     failures = []
@@ -247,15 +259,17 @@ class SpotifyImportWorker(QThread):
     completed = Signal(int, int, str, str)
     failed = Signal(str)
 
-    def __init__(self, playlist_url, parent=None):
+    def __init__(self, playlist_url, target_playlist_id=None, parent=None):
         super().__init__(parent)
         self.playlist_url = playlist_url
+        self.target_playlist_id = target_playlist_id
 
     def run(self):
         try:
             playlist_id, failures, playlist_name, failure_log = import_playlist(
                 self.playlist_url,
-                lambda current, total, title: self.progress.emit(current, total, title)
+                target_playlist_id=self.target_playlist_id,
+                progress=lambda current, total, title: self.progress.emit(current, total, title),
             )
             self.completed.emit(playlist_id, len(failures), playlist_name, failure_log)
         except Exception as error:
