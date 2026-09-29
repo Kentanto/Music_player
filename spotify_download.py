@@ -1,5 +1,6 @@
 """Import a Spotify playlist into the Music Engine library."""
 
+import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -25,8 +26,8 @@ SPOTIFY_CLIENT_SECRET = "9fca954348d84b658aeb2987a068ef69"
 PLAYLIST_NAME = "Spotify Import"
 MIN_VIDEO_DURATION = 45
 MAX_VIDEO_DURATION = 10 * 60
-SEARCH_RESULTS = 20
-NUM_WORKERS = 3
+SEARCH_RESULTS = 10          # was 20  — fewer results means faster flat searches
+NUM_WORKERS = 5              # was 3   — I/O bound, more parallelism
 FAILURE_LOG_NAME = "failed_songs.txt"
 
 # These words usually mean an altered, fake or wrong version; we penalise them HEAVILY.
@@ -154,80 +155,116 @@ def _score_result(entry, track_name, artist_name, expected_seconds=None):
 
 
 def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
-    """Search YouTube and return the best matching, available video."""
-    options = {
+    """Search YouTube and return the best matching, available video (two-phase)."""
+
+    flat_opts = {
         "quiet": True,
         "no_warnings": True,
-        "extract_flat": False,
+        "extract_flat": "in_playlist",
+        "noplaylist": True,
+        "ignoreerrors": True,
+    }
+    full_opts = {
+        "quiet": True,
+        "no_warnings": True,
         "noplaylist": True,
         "ignoreerrors": True,
         **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
     }
-    # Use quotes around track name to reduce irrelevant matches.
-    # Queries ordered from most precise to broadest.
+
     safe_track = track_name.replace('"', '')
     safe_artist = artist_name.replace('"', '')
     queries = [
         f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist}',
         f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist} official audio',
         f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist} lyrics',
-        f'ytsearch{SEARCH_RESULTS}:{safe_track} {safe_artist}',  # last resort broad query
+        f'ytsearch{SEARCH_RESULTS}:{safe_track} {safe_artist}',
     ]
 
-    all_candidates = []
+    # ---- Phase 1: fast flat search ----
+    t0 = time.time()
+    all_flat = []
     for query in queries:
         try:
-            with YoutubeDL(options) as ydl:
+            with YoutubeDL(flat_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
         except Exception:
             continue
-        for entry in info.get("entries") or []:
-            if not entry or not entry.get("id"):
+        for e in (info.get("entries") or []) if info else []:
+            if not e or not e.get("id"):
                 continue
-            duration = entry.get("duration")
-            if entry.get("is_live"):
-                continue
-            if duration is not None and (duration < MIN_VIDEO_DURATION or duration > MAX_VIDEO_DURATION):
-                continue
-            all_candidates.append(entry)
+            all_flat.append(e)
 
-    if not all_candidates:
+    if not all_flat:
         return None
 
-    all_candidates.sort(
+    # de-dupe + pre-filter live / duration
+    seen_ids = set()
+    candidates = []
+    for e in all_flat:
+        vid = e.get("id")
+        if not vid or vid in seen_ids:
+            continue
+        seen_ids.add(vid)
+        if e.get("is_live"):
+            continue
+        dur = e.get("duration")
+        if dur is not None and (dur < MIN_VIDEO_DURATION or dur > MAX_VIDEO_DURATION):
+            continue
+        candidates.append(e)
+
+    if not candidates:
+        return None
+
+    # Rank using the SAME _score_result function (flat entries just have fewer fields,
+    # missing fields default to None / 0 which is safe).
+    candidates.sort(
         key=lambda e: _score_result(e, track_name, artist_name, expected_seconds),
         reverse=True,
     )
 
-    check_opts = {"quiet": True, "no_warnings": True, "cookiefile": None}
-    if FFMPEG_LOCATION:
-        check_opts["ffmpeg_location"] = FFMPEG_LOCATION
-
-    for entry in all_candidates:
-        url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={entry['id']}"
+    # ---- Phase 2: full extraction on best candidates only ----
+    # Try the top N.  Most tracks resolve in the first 3, but 6 gives a safety margin.
+    top_n = min(6, len(candidates))
+    enriched = []
+    for e in candidates[:top_n]:
+        url = e.get("webpage_url") or f"https://www.youtube.com/watch?v={e['id']}"
         try:
-            with YoutubeDL(check_opts) as ydl:
+            with YoutubeDL(full_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
         except Exception:
-            video_id = entry.get("id")
-            print(f"[spotify] Skipping unavailable/id={video_id}", flush=True)
             continue
-        yt_artist = (
-            info.get("uploader")
-            or info.get("channel")
-            or info.get("creator")
-            or info.get("artist")
-            or entry.get("uploader")
-            or entry.get("channel")
-            or entry.get("creator")
-            or entry.get("artist")
-        )
-        return {
-            "url": url,
-            "thumbnail": info.get("thumbnail") or entry.get("thumbnail"),
-            "uploader": yt_artist,
-        }
-    return None
+        if not info or info.get("is_live"):
+            continue
+        dur = info.get("duration")
+        if dur is not None and (dur < MIN_VIDEO_DURATION or dur > MAX_VIDEO_DURATION):
+            continue
+        enriched.append(info)
+
+    if not enriched:
+        return None
+
+    enriched.sort(
+        key=lambda e: _score_result(e, track_name, artist_name, expected_seconds),
+        reverse=True,
+    )
+    winner = enriched[0]
+    yt_artist = (
+        winner.get("uploader")
+        or winner.get("channel")
+        or winner.get("creator")
+        or winner.get("artist")
+    )
+    print(
+        f"[search] '{track_name}' done in {(time.time()-t0):.2f}s → {winner.get('title', 'unknown')!r} "
+        f"(uploader={winner.get('uploader') or winner.get('channel') or 'unknown'})",
+        flush=True,
+    )
+    return {
+        "url": winner.get("webpage_url") or f"https://www.youtube.com/watch?v={winner['id']}",
+        "thumbnail": winner.get("thumbnail"),
+        "uploader": yt_artist,
+    }
 
 
 def _tracks(client, playlist_url):
