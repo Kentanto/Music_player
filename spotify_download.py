@@ -1,5 +1,6 @@
 """Import a Spotify playlist into the Music Engine library."""
 
+import os
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -157,12 +158,15 @@ def _score_result(entry, track_name, artist_name, expected_seconds=None):
 def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
     """Search YouTube and return the best matching, available video (two-phase)."""
 
+    from db import get_ytdlp_cookie_options
+    cookie_opt = get_ytdlp_cookie_options()
     flat_opts = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "noplaylist": True,
         "ignoreerrors": True,
+        **cookie_opt,
     }
     full_opts = {
         "quiet": True,
@@ -170,6 +174,7 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
         "noplaylist": True,
         "ignoreerrors": True,
         **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
+        **cookie_opt,
     }
 
     safe_track = track_name.replace('"', '')

@@ -18,6 +18,18 @@ def resource_path(relative_path):
     return BASE_DIR / relative_path
 
 
+def get_ytdlp_cookie_options():
+    """Return yt-dlp cookie options from YTDLP_BROWSER / YTDLP_COOKIEFILE env vars."""
+    opts = {}
+    browser = os.environ.get("YTDLP_BROWSER")
+    if browser:
+        opts["cookiesfrombrowser"] = (browser,)
+    cookiefile = os.environ.get("YTDLP_COOKIEFILE")
+    if cookiefile and Path(cookiefile).exists():
+        opts["cookiefile"] = str(Path(cookiefile).resolve())
+    return opts
+
+
 def data_path(relative_path):
     if getattr(sys, "frozen", False):
         if os.name == "nt":
@@ -653,9 +665,7 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
         ],
     }
 
-    browser = os.environ.get("YTDLP_BROWSER")
-    if browser:
-        ydl_opts["cookiesfrombrowser"] = (browser,)
+    ydl_opts.update(get_ytdlp_cookie_options())
 
     try:
         with YoutubeDL(ydl_opts) as ydl:

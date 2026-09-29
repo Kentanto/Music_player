@@ -4,7 +4,7 @@ import tempfile
 import warnings
 from pathlib import Path
 from yt_dlp import YoutubeDL
-from db import get_cached_stream, cache_stream, resource_path
+from db import get_cached_stream, cache_stream, resource_path, get_ytdlp_cookie_options
 
 
 def get_ffmpeg_location():
@@ -54,9 +54,7 @@ def resolve_stream(url, max_duration=600):
         ],
     }
 
-    browser = os.environ.get("YTDLP_BROWSER")
-    if browser:
-        ydl_opts["cookiesfrombrowser"] = (browser,)
+    ydl_opts.update(get_ytdlp_cookie_options())
 
     # Add common browser headers
     ydl_opts.setdefault("http_headers", {})

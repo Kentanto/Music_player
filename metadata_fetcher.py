@@ -2,9 +2,10 @@
 
 from PySide6.QtCore import QThread, Signal
 from yt_dlp import YoutubeDL
+import os
 import warnings
 
-from db import get_ffmpeg_location
+from db import get_ffmpeg_location, get_ytdlp_cookie_options
 FFMPEG_LOCATION = get_ffmpeg_location()
 
 warnings.filterwarnings("ignore")
@@ -28,6 +29,7 @@ class MetadataFetcher(QThread):
             "quiet": True,
             "no_warnings": True,
             **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
+            **get_ytdlp_cookie_options(),
         }
 
         for result in self.results:

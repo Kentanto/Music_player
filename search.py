@@ -1,6 +1,6 @@
 from yt_dlp import YoutubeDL
 import warnings
-from db import get_ffmpeg_location
+from db import get_ffmpeg_location, get_ytdlp_cookie_options
 FFMPEG_LOCATION = get_ffmpeg_location()
 
 # Suppress yt-dlp warnings
@@ -30,6 +30,7 @@ def search_youtube(query, limit=10, max_duration=600):
         "extract_flat": True,  # Fast: don't fetch full details
         "no_warnings": True,
         **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
+        **get_ytdlp_cookie_options(),
     }
 
     # Use ytsearch{N}: to request multiple results from yt-dlp
