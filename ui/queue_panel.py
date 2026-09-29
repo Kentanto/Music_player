@@ -163,7 +163,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         text_x = icon_rect.right() + self.PADDING
         duration_w = 50
 
-        title = str(data.get("title", "Unknown")) if data else "Unknown"
+        title = str(data.get("title") or "Unknown") if data else "Unknown"
         if data and data.get("count") is not None:
             title += f"  ({data.get('count', 0)} songs)"
 
@@ -173,7 +173,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         title_rect = option.rect.adjusted(text_x, self.PADDING, -self.PADDING - duration_w, 0)
         painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop, title)
 
-        artist = str(data.get("artist", "")) if data else ""
+        artist = str(data.get("artist") or "") if data else ""
         if artist:
             font.setPointSize(8)
             font.setBold(False)
@@ -193,7 +193,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
-        return QSize(option.rect.width(), self.ICON_SIZE + self.PADDING * 2)
+        return QSize(option.rect.width(), self.ICON_SIZE + self.PADDING * 2 + 8)
 
 
 class QueuePanel(QWidget):

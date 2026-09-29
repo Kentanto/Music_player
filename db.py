@@ -152,19 +152,37 @@ def init_db():
 
 
 def save_song(title, url, artist=None, thumbnail=None):
+    """Insert or update a song and return its id. Handles NULL urls via lastrowid."""
     conn = sqlite3.connect(DB)
     try:
         c = conn.cursor()
+        # When url is None we can't use the ON CONFLICT upsert; do a
+        # plain INSERT and rely on lastrowid (or SELECT IS NULL fallback).
+        if url is None:
+            c.execute(
+                "INSERT INTO songs (title, url, artist, thumbnail) VALUES (?, ?, ?, ?)",
+                (title, url, artist, thumbnail),
+            )
+            song_id = c.lastrowid
+            if song_id is None:
+                row = c.execute(
+                    "SELECT id FROM songs WHERE url IS NULL AND title=?",
+                    (title,),
+                ).fetchone()
+                song_id = row[0] if row else None
+            conn.commit()
+            return song_id
         c.execute(
             "INSERT INTO songs (title, url, artist, thumbnail) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(url) DO UPDATE SET "
             "title=COALESCE(excluded.title, songs.title), "
             "artist=COALESCE(excluded.artist, songs.artist), "
             "thumbnail=COALESCE(excluded.thumbnail, songs.thumbnail)",
-            (title, url, artist, thumbnail)
+            (title, url, artist, thumbnail),
         )
         c.execute("SELECT id FROM songs WHERE url=?", (url,))
         row = c.fetchone()
+        conn.commit()
         return row[0] if row else None
     finally:
         conn.close()
@@ -369,7 +387,7 @@ def _scan_playlist_folder(folder):
     songs = []
     for file_path in sorted(folder_path.iterdir()):
         if file_path.suffix.lower() in audio_extensions:
-            songs.append((file_path.stem, str(file_path), str(file_path)))
+            songs.append((file_path.stem, str(file_path), str(file_path), None))
     return songs
 
 
@@ -403,7 +421,7 @@ def get_playlist_songs(playlist_id):
     try:
         c = conn.cursor()
         c.execute(
-            "SELECT s.title, s.url, ps.file_path "
+            "SELECT s.title, s.url, ps.file_path, s.artist "
             "FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id "
             "WHERE ps.playlist_id = ? "
@@ -420,9 +438,9 @@ def get_playlist_songs(playlist_id):
     songs_by_path = {song[2]: song for song in db_songs}
     merged = list(db_songs)
 
-    for title, file_path, _ in folder_songs:
+    for title, file_path, _, artist in folder_songs:
         if file_path not in songs_by_path:
-            merged.append((title, None, file_path))
+            merged.append((title, None, file_path, artist))
 
     return merged
 
@@ -757,10 +775,10 @@ def get_all_songs_from_all_playlists():
 
 
 def get_all_playlist_songs_flat():
-    """Return all unique songs across every playlist as (title, url, file_path) rows, preserving first appearance order."""
+    """Return all unique songs across every playlist as (title, url, file_path, artist) rows, preserving first appearance order."""
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
-            "SELECT s.title, s.url, ps.file_path, ps.song_id FROM playlist_songs ps "
+            "SELECT s.title, s.url, ps.file_path, s.artist FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.id"
         ).fetchall()
     seen = set()
@@ -770,7 +788,7 @@ def get_all_playlist_songs_flat():
         key = url if url else row[2]
         if key not in seen:
             seen.add(key)
-            result.append(row[:3])
+            result.append(tuple(row))
 
     # Merge in any audio files present in playlist folders but not yet tracked in the DB
     audio_extensions = {".mp3", ".m4a", ".opus", ".wav", ".aac"}
@@ -782,6 +800,6 @@ def get_all_playlist_songs_flat():
                 fp = str(file_path)
                 if fp not in seen:
                     seen.add(fp)
-                    result.append((file_path.stem, None, fp))
+                    result.append((file_path.stem, None, fp, None))
 
     return result

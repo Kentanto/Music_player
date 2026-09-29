@@ -207,14 +207,25 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
         url = entry.get("webpage_url") or f"https://www.youtube.com/watch?v={entry['id']}"
         try:
             with YoutubeDL(check_opts) as ydl:
-                ydl.extract_info(url, download=False)
+                info = ydl.extract_info(url, download=False)
         except Exception:
             video_id = entry.get("id")
             print(f"[spotify] Skipping unavailable/id={video_id}", flush=True)
             continue
+        yt_artist = (
+            info.get("uploader")
+            or info.get("channel")
+            or info.get("creator")
+            or info.get("artist")
+            or entry.get("uploader")
+            or entry.get("channel")
+            or entry.get("creator")
+            or entry.get("artist")
+        )
         return {
             "url": url,
-            "thumbnail": entry.get("thumbnail"),
+            "thumbnail": info.get("thumbnail") or entry.get("thumbnail"),
+            "uploader": yt_artist,
         }
     return None
 
@@ -268,9 +279,8 @@ def import_playlist(playlist_url, target_playlist_id=None, progress=None):
         track = item.get("track") or {}
         name = (track.get("name") or "Unknown track").strip()
         artists = track.get("artists") or []
-        artist = artists[0].get("name") if artists else "Unknown artist"
-        if artist:
-            artist = artist.strip()
+        artist = (artists[0].get("name") if artists else None) or "Unknown artist"
+        artist = artist.strip()
         # Use the clean track name as the download title so the DB title stays
         # separate from the artist field.
         duration_ms = track.get("duration_ms")
@@ -285,8 +295,9 @@ def import_playlist(playlist_url, target_playlist_id=None, progress=None):
                 raise RuntimeError("Audio download failed")
             images = track.get("album", {}).get("images") or []
             thumbnail = images[0].get("url") if images else candidate.get("thumbnail")
+            yt_artist = candidate.get("uploader") or artist
             add_downloaded_song_to_playlist(
-                name, candidate["url"], playlist_id, file_path, artist, thumbnail
+                name, candidate["url"], playlist_id, file_path, yt_artist, thumbnail
             )
             _progress_step(f"{name} - {artist}")
             return None

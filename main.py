@@ -736,8 +736,8 @@ class MusicAppController:
         else:
             playlist_songs = get_playlist_songs(playlist_id)
         self.current_results = [
-            self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "type": "track"})
-            for title, url, file_path in playlist_songs
+            self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "artist": artist, "type": "track"})
+            for title, url, file_path, artist in playlist_songs
         ]
         self.active_queue_urls = [
             track.get("file_path") or track.get("url")
