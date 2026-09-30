@@ -28,7 +28,8 @@ PLAYLIST_NAME = "Spotify Import"
 MIN_VIDEO_DURATION = 45
 MAX_VIDEO_DURATION = 10 * 60
 SEARCH_RESULTS = 10          # was 20  — fewer results means faster flat searches
-NUM_WORKERS = 5              # was 3   — I/O bound, more parallelism
+NUM_WORKERS = 1              # one at a time to avoid bot detection
+BATCH_DELAY = 0.5            # seconds between each batch
 FAILURE_LOG_NAME = "failed_songs.txt"
 
 # These words usually mean an altered, fake or wrong version; we penalise them HEAVILY.
@@ -347,13 +348,16 @@ def import_playlist(playlist_url, target_playlist_id=None, progress=None):
             _progress_step(f"{name} - {artist}")
             return f"{name} - {artist}", str(error)
 
-    with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
-        futures = {executor.submit(_process_one, item): item for item in tracks}
-        for future in futures:
-            err = future.result()
-            if err:
-                failures.append(err)
-                _log_failure(folder, err[0], err[1])
+    for i in range(0, len(tracks), NUM_WORKERS):
+        batch = tracks[i:i + NUM_WORKERS]
+        with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
+            futures = {executor.submit(_process_one, item): item for item in batch}
+            for future in futures:
+                err = future.result()
+                if err:
+                    failures.append(err)
+                    _log_failure(folder, err[0], err[1])
+        time.sleep(BATCH_DELAY)
 
     return playlist_id, failures, playlist_name, str(failure_log)
 

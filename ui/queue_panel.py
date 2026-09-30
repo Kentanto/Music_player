@@ -217,7 +217,7 @@ class QueuePanel(QWidget):
         self.queued_next_source = None
         self._reset_scroll_on_refresh = False
         self._commit_index = 3  # "Date Added"
-        self._reverse = False
+        self._reverse = True
         self.init_ui()
 
     def init_ui(self):
