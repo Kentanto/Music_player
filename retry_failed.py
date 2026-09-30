@@ -39,7 +39,7 @@ elif _args.browser:
     os.environ["YTDLP_BROWSER"] = _args.browser
     print(f"[retry] Using browser cookies: {_args.browser}", flush=True)
 
-from spotify_download import get_best_youtube_result
+from search import search_youtube
 from db import (
     add_downloaded_song_to_playlist,
     download_audio_to_folder,
@@ -98,17 +98,24 @@ def retry_all(limit=None):
 
     for idx, (song_line, reason) in enumerate(items, start=1):
         print(f"\n[retry {idx}/{len(items)}] {song_line}")
-        candidate = get_best_youtube_result(song_line, "")
-        if not candidate:
+
+        # Light search instead of heavy multi-pass scoring
+        candidates = search_youtube(song_line, limit=6)
+        if not candidates:
             reason_out = "No YouTube match"
             print(f"[retry]   {reason_out}")
             still_failed.append((song_line, reason_out))
-            time.sleep(DELAY_SEC)
+            if idx < len(items):
+                time.sleep(DELAY_SEC)
             continue
 
+        candidate = candidates[0]
         url = candidate["url"]
-        yt_artist = candidate.get("uploader") or "Unknown"
+        yt_artist = candidate.get("artist") or "Unknown"
         thumbnail = candidate.get("thumbnail")
+
+        # Short pause before download to stay under the bot radar
+        time.sleep(3)
 
         file_path = download_audio_to_folder(
             url, song_line, folder,
@@ -119,7 +126,8 @@ def retry_all(limit=None):
             reason_out = "Audio download failed"
             print(f"[retry]   {reason_out}")
             still_failed.append((song_line, reason_out))
-            time.sleep(DELAY_SEC)
+            if idx < len(items):
+                time.sleep(DELAY_SEC)
             continue
 
         add_downloaded_song_to_playlist(
