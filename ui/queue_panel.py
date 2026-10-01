@@ -207,6 +207,7 @@ class QueuePanel(QWidget):
     remove_requested = Signal(object)
     rename_requested = Signal(object)
     delete_playlist_requested = Signal(object)
+    playback_order_changed = Signal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -326,7 +327,7 @@ class QueuePanel(QWidget):
             return
         self._reverse = not self._reverse
         self._update_dir_button_state()
-        self._refresh_display()
+        self._refresh_display(True)
 
     def _on_sort_activated(self, index):
         """Committed selection from the dropdown."""
@@ -334,9 +335,9 @@ class QueuePanel(QWidget):
             return
         self._commit_index = index
         self._update_dir_button_state()
-        self._refresh_display()
+        self._refresh_display(True)
 
-    def _refresh_display(self):
+    def _refresh_display(self, from_sort_widget=False):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
@@ -357,10 +358,11 @@ class QueuePanel(QWidget):
         elif sort_mode == "Date Added":
             items.sort(key=lambda x: x.get("added_at") or "", reverse=self._reverse)
         elif sort_mode == "Shuffled":
-            # Items are already in the player's shuffled playback order;
-            # do not re-sort them here.
             pass
         self.list_widget.setSortingEnabled(False)
+
+        # Persist the visual ordering so the player's queue can stay in sync
+        self.items_data = list(items)
 
         if filter_text:
             items = [item for item in items if filter_text in str(item.get("title", "")).casefold()]
@@ -393,6 +395,12 @@ class QueuePanel(QWidget):
                 self.list_widget.scrollToBottom()
             else:
                 scroll_bar.setValue(previous_scroll_value)
+
+        # Notify the controller whenever the user causes a re-order so
+        # the playback queue stays synchronized with the visible list.
+        if from_sort_widget:
+            urls = [i.get("file_path") or i.get("url") for i in self.items_data]
+            self.playback_order_changed.emit(urls)
 
     def get_current_index(self):
         return self.list_widget.currentRow()

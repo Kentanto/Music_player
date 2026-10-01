@@ -104,6 +104,7 @@ class MusicAppController:
         self.window.queue_panel.remove_requested.connect(self.handle_remove_song)
         self.window.queue_panel.rename_requested.connect(self.handle_rename_item)
         self.window.queue_panel.delete_playlist_requested.connect(self.handle_delete_playlist)
+        self.window.queue_panel.playback_order_changed.connect(self.handle_playback_order_changed)
         self.window.add_to_playlist_requested.connect(self.handle_add_to_playlist)
         self.window.track_selected.connect(self.handle_track_selected)
         self.window.next_track.connect(self.handle_next)
@@ -323,7 +324,7 @@ class MusicAppController:
             "count": len(all_songs),
         })
         self.current_results = display_data
-        self._refresh_queue_display()
+        self._refresh_queue_display(reset_scroll=True)
         set_app_setting("last_view", "playlists")
         print(f"Loaded {len(playlists)} playlists + All Songs ({len(all_songs)} tracks)")
 
@@ -694,9 +695,9 @@ class MusicAppController:
 
         self.active_queue_urls = list(urls)
         self.player.set_queue(urls, current_item=current_item)
-        self._refresh_queue_display()
+        self._refresh_queue_display(reset_scroll=True)
 
-    def _refresh_queue_display(self):
+    def _refresh_queue_display(self, reset_scroll=False):
         track_items = [item for item in self.current_results if item.get("type") != "playlist"]
         if not track_items:
             self.window.queue_panel.add_items(
@@ -714,12 +715,35 @@ class MusicAppController:
                 ordered_sources,
                 current_source=self.player._current_item,
                 queued_next=queued_next,
-                reset_scroll=True,
+                reset_scroll=reset_scroll,
             )
+            # When the view is first loaded (startup / playlist switch) the sort
+            # widget may have re-ordered the display.  Make sure the player's queue
+            # matches the visual order so Next / Prev follow what is on-screen.
+            if reset_scroll:
+                visual_urls = [
+                    i.get("file_path") or i.get("url")
+                    for i in self.window.queue_panel.items_data
+                    if i.get("file_path") or i.get("url")
+                ]
+                if visual_urls:
+                    self.handle_playback_order_changed(visual_urls)
         else:
             self.window.display_results(
                 track_items, preserve_order=True, current_item_source=self.player._current_item
             )
+
+    def handle_playback_order_changed(self, urls):
+        """Called when the user's sort choice changes the visible order.
+
+        Keep the player queue in sync so Next / Prev / autoplay follow
+        what is shown on-screen.
+        """
+        if not urls:
+            return
+        self.active_queue_urls = list(urls)
+        self.player.set_queue(urls, current_item=self.player._current_item)
+        self._update_now_playing()
 
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
@@ -747,7 +771,7 @@ class MusicAppController:
         if current_item not in self.active_queue_urls:
             current_item = self.active_queue_urls[0] if self.active_queue_urls else None
         self.player.set_queue(self.active_queue_urls, current_item=current_item)
-        self._refresh_queue_display()
+        self._refresh_queue_display(reset_scroll=True)
         set_app_setting("last_view", "playlist")
         set_app_setting("last_playlist_id", str(playlist_id))
         print(f"Opened playlist {playlist_id} with {len(playlist_songs)} songs")
