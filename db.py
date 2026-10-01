@@ -139,11 +139,25 @@ def init_db():
         playlist_id INTEGER,
         song_id INTEGER,
         file_path TEXT UNIQUE,
+        added_at TEXT DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (playlist_id) REFERENCES playlists(id),
         FOREIGN KEY (song_id) REFERENCES songs(id),
         UNIQUE (playlist_id, song_id)
     )
     """)
+
+    columns = {row[1] for row in c.execute("PRAGMA table_info(playlist_songs)")}
+    if "added_at" not in columns:
+        c.execute("ALTER TABLE playlist_songs ADD COLUMN added_at TEXT")
+        # Backfill legacy rows with each file's last-modified time.
+        dt_mod = __import__("datetime")
+        for row_id, fp in c.execute("SELECT id, file_path FROM playlist_songs WHERE added_at IS NULL").fetchall():
+            try:
+                ts = os.path.getmtime(fp)
+                added_at = dt_mod.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+            except OSError:
+                added_at = None
+            c.execute("UPDATE playlist_songs SET added_at = ? WHERE id = ?", (added_at, row_id))
 
     c.execute("""
     CREATE TABLE IF NOT EXISTS app_settings (
@@ -390,6 +404,15 @@ def delete_playlist(playlist_id, use_trash=True):
     return True
 
 
+def _file_mtime_iso(file_path):
+    """Return file last-modified time as an ISO-style YYYY-MM-DD HH:MM:SS string."""
+    try:
+        ts = os.path.getmtime(file_path)
+        return __import__("datetime").datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except OSError:
+        return None
+
+
 def _scan_playlist_folder(folder):
     folder_path = Path(folder)
     if not folder_path.exists() or not folder_path.is_dir():
@@ -399,7 +422,7 @@ def _scan_playlist_folder(folder):
     songs = []
     for file_path in sorted(folder_path.iterdir()):
         if file_path.suffix.lower() in audio_extensions:
-            songs.append((file_path.stem, str(file_path), str(file_path), None))
+            songs.append((file_path.stem, str(file_path), str(file_path), None, _file_mtime_iso(file_path)))
     return songs
 
 
@@ -433,7 +456,7 @@ def get_playlist_songs(playlist_id):
     try:
         c = conn.cursor()
         c.execute(
-            "SELECT s.title, s.url, ps.file_path, s.artist "
+            "SELECT s.title, s.url, ps.file_path, s.artist, ps.added_at "
             "FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id "
             "WHERE ps.playlist_id = ? "
@@ -450,9 +473,9 @@ def get_playlist_songs(playlist_id):
     songs_by_path = {song[2]: song for song in db_songs}
     merged = list(db_songs)
 
-    for title, file_path, _, artist in folder_songs:
+    for title, file_path, _, artist, added_at in folder_songs:
         if file_path not in songs_by_path:
-            merged.append((title, None, file_path, artist))
+            merged.append((title, None, file_path, artist, added_at))
 
     return merged
 
@@ -603,7 +626,7 @@ def add_song_to_playlist(title, url, playlist_id, artist=None, thumbnail=None):
             print(f"[playlist-db] repaired existing row: id={existing_row[0]}", flush=True)
         else:
             c.execute(
-                "INSERT INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
+                "INSERT INTO playlist_songs (playlist_id, song_id, file_path, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
                 (playlist_id, song_id, file_path),
             )
             print(f"[playlist-db] inserted: playlist_id={playlist_id}, song_id={song_id}", flush=True)
@@ -622,7 +645,7 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
     conn = sqlite3.connect(DB)
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
             (playlist_id, song_id, file_path),
         )
         conn.commit()
@@ -785,10 +808,10 @@ def get_all_songs_from_all_playlists():
 
 
 def get_all_playlist_songs_flat():
-    """Return all unique songs across every playlist as (title, url, file_path, artist) rows, preserving first appearance order."""
+    """Return all unique songs across every playlist as (title, url, file_path, artist, added_at) rows, preserving first appearance order."""
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
-            "SELECT s.title, s.url, ps.file_path, s.artist FROM playlist_songs ps "
+            "SELECT s.title, s.url, ps.file_path, s.artist, ps.added_at FROM playlist_songs ps "
             "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.id"
         ).fetchall()
     seen = set()
@@ -810,6 +833,6 @@ def get_all_playlist_songs_flat():
                 fp = str(file_path)
                 if fp not in seen:
                     seen.add(fp)
-                    result.append((file_path.stem, None, fp, None))
+                    result.append((file_path.stem, None, fp, None, None))
 
     return result

@@ -216,7 +216,7 @@ class QueuePanel(QWidget):
         self.current_item_source = None
         self.queued_next_source = None
         self._reset_scroll_on_refresh = False
-        self._commit_index = 3  # "Date Added"
+        self._commit_index = 4  # "Date Added"
         self._reverse = True
         self.init_ui()
 
@@ -234,7 +234,8 @@ class QueuePanel(QWidget):
         controls.addWidget(self.filter_input)
 
         self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["Sort by", "Title", "Duration", "Date Added", "Shuffled"])
+        self._base_sort_labels = ["Sort by", "Title", "Artist", "Duration", "Date Added", "Shuffled"]
+        self.sort_combo.addItems(self._base_sort_labels)
         self.sort_combo.model().item(0).setEnabled(False)
         self.sort_combo.setCurrentText("Date Added")
         self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
@@ -292,23 +293,38 @@ class QueuePanel(QWidget):
             self._reset_scroll_on_refresh = True
         self._refresh_display()
 
-    def set_sort_mode(self, mode):
+    def set_sort_mode(self, mode, reverse=False):
         """Programmatically set the sort mode and sync internal state."""
+        # Strip arrow suffix in case caller includes it
+        base = mode.rstrip(" \u25b2\u25bc")
+        self._reverse = reverse
         self.sort_combo.blockSignals(True)
-        self.sort_combo.setCurrentText(mode)
+        self.sort_combo.setCurrentText(base)
         self.sort_combo.blockSignals(False)
         self._commit_index = self.sort_combo.currentIndex()
-        self._reverse = False
         self._refresh_display()
+
+    def _arrow_label(self, sort_mode, reverse):
+        if sort_mode in ("Sort by", "Shuffled"):
+            return sort_mode
+        arrow = "\u25bc" if reverse else "\u25b2"
+        return f"{sort_mode} {arrow}"
 
     def _on_sort_changed(self):
         """Live preview when navigating the combo (arrow keys), no reverse applied."""
         self._reverse = False
-        self._refresh_display()
+        # Clear any arrow label from the committed index so the hovered
+        # item text reads cleanly during preview.
+        prev_label = self._base_sort_labels[self._commit_index]
+        if self.sort_combo.itemText(self._commit_index) != prev_label:
+            self.sort_combo.setItemText(self._commit_index, prev_label)
+        self._refresh_display(preview=True)
 
     def _on_sort_activated(self, index):
         """Committed selection: toggle reverse if clicking the same option again."""
-        sort_mode = self.sort_combo.itemText(index)
+        if index < 0 or index >= len(self._base_sort_labels):
+            return
+        sort_mode = self._base_sort_labels[index]
         if sort_mode == "Sort by":
             return
         if index == self._commit_index and sort_mode != "Shuffled":
@@ -318,7 +334,7 @@ class QueuePanel(QWidget):
             self._commit_index = index
         self._refresh_display()
 
-    def _refresh_display(self):
+    def _refresh_display(self, preview=False):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
@@ -327,12 +343,25 @@ class QueuePanel(QWidget):
             self._reset_scroll_on_refresh = False
 
         filter_text = self.filter_input.text().strip().casefold()
-        sort_mode = self.sort_combo.currentText()
+        if preview:
+            sort_index = self.sort_combo.currentIndex()
+            sort_mode = self._base_sort_labels[sort_index] if 0 <= sort_index < len(self._base_sort_labels) else "Title"
+        else:
+            sort_index = self._commit_index
+            sort_mode = self._base_sort_labels[sort_index] if 0 <= self._commit_index < len(self._base_sort_labels) else "Title"
+            # Update the committed item text with an arrow indicator
+            label = self._arrow_label(sort_mode, self._reverse)
+            if self.sort_combo.itemText(sort_index) != label:
+                self.sort_combo.setItemText(sort_index, label)
+            if self.sort_combo.currentText() != label:
+                self.sort_combo.setCurrentText(label)
 
         items = list(self.items_data)
 
         if sort_mode == "Title":
             items.sort(key=lambda x: str(x.get("title", "")).casefold(), reverse=self._reverse)
+        elif sort_mode == "Artist":
+            items.sort(key=lambda x: str(x.get("artist", "")).casefold(), reverse=self._reverse)
         elif sort_mode == "Duration":
             items.sort(key=lambda x: x.get("duration") or float("inf"), reverse=self._reverse)
         elif sort_mode == "Date Added":

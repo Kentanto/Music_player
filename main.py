@@ -65,7 +65,7 @@ class MusicAppController:
         self.player.shuffle_enabled = saved_shuffle.lower() == "true"
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
         self.window.queue_panel.set_sort_mode(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added"
+            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=False
         )
         
         # Restore the last playlist or show playlists first
@@ -283,7 +283,7 @@ class MusicAppController:
         if not queue_urls:
             self.player.shuffle_enabled = False
             self.window.player_bar.set_shuffle_state(False)
-            self.window.queue_panel.set_sort_mode("Date Added")
+            self.window.queue_panel.set_sort_mode("Date Added", reverse=False)
             set_app_setting("shuffle_enabled", "False")
             return
 
@@ -296,7 +296,7 @@ class MusicAppController:
         self.player.toggle_shuffle(enabled)
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
         self.window.queue_panel.set_sort_mode(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added"
+            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=False
         )
         set_app_setting("shuffle_enabled", str(bool(self.player.shuffle_enabled)))
         self.active_queue_urls = list(queue_urls)
@@ -726,18 +726,17 @@ class MusicAppController:
         # Clear search inputs when opening a playlist (fresh context)
         self.window.search_panel.clear()
         self.window.queue_panel.filter_input.clear()
-        self.window.queue_panel.sort_combo.blockSignals(True)
-        self.window.queue_panel.sort_combo.setCurrentText(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added"
-        )
-        self.window.queue_panel.sort_combo.blockSignals(False)
+        # Only force sort to "Shuffled" when shuffle mode itself is on.
+        # Otherwise preserve the user's last sort preference.
+        if self.player.shuffle_enabled:
+            self.window.queue_panel.set_sort_mode("Shuffled", reverse=False)
         if playlist_id == "all":
             playlist_songs = get_all_playlist_songs_flat()
         else:
             playlist_songs = get_playlist_songs(playlist_id)
         self.current_results = [
-            self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "artist": artist, "type": "track"})
-            for title, url, file_path, artist in playlist_songs
+            self._enrich_track_dict({"title": title, "url": url, "file_path": file_path, "artist": artist, "added_at": added_at, "type": "track"})
+            for title, url, file_path, artist, added_at in playlist_songs
         ]
         self.active_queue_urls = [
             track.get("file_path") or track.get("url")
