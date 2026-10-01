@@ -545,7 +545,7 @@ class MusicAppController:
             self.spotify_import_worker.wait()
         if self.cec_remote and self.cec_remote.isRunning():
             self.cec_remote.stop()
-        if self.gamepad and self.gamepad.isRunning():
+        if self.gamepad:
             self.gamepad.stop()
         self.player.stop()
     

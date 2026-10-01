@@ -1,10 +1,10 @@
 import os
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+    QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QPushButton, QMenu, QStyledItemDelegate, QStyle,
 )
-from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QTimer, QUrl
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
@@ -385,10 +385,12 @@ class QueuePanel(QWidget):
             self.list_widget.setCurrentRow(0)
 
         if reset_scroll:
-            scroll_bar.setValue(0)
+            QTimer.singleShot(
+                0, lambda: self.list_widget.scrollToTop() if self.list_widget else None
+            )
         else:
             if was_at_bottom:
-                scroll_bar.setValue(scroll_bar.maximum())
+                self.list_widget.scrollToBottom()
             else:
                 scroll_bar.setValue(previous_scroll_value)
 
