@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
-    QLabel, QLineEdit, QComboBox, QMenu, QStyledItemDelegate, QStyle,
+    QLabel, QLineEdit, QComboBox, QPushButton, QMenu, QStyledItemDelegate, QStyle,
 )
 from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
@@ -216,7 +216,7 @@ class QueuePanel(QWidget):
         self.current_item_source = None
         self.queued_next_source = None
         self._reset_scroll_on_refresh = False
-        self._commit_index = 4  # "Date Added"
+        self._commit_index = 2  # "Date Added"
         self._reverse = True
         self.init_ui()
 
@@ -230,18 +230,27 @@ class QueuePanel(QWidget):
         controls = QHBoxLayout()
         self.filter_input = QLineEdit()
         self.filter_input.setPlaceholderText("Filter songs...")
-        self.filter_input.textChanged.connect(self._refresh_display)
+        self.filter_input.textChanged.connect(lambda _: self._refresh_display())
         controls.addWidget(self.filter_input)
 
-        self.sort_combo = QComboBox()
-        self._base_sort_labels = ["Sort by", "Title", "Artist", "Duration", "Date Added", "Shuffled"]
-        self.sort_combo.addItems(self._base_sort_labels)
-        self.sort_combo.model().item(0).setEnabled(False)
-        self.sort_combo.setCurrentText("Date Added")
-        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
-        self.sort_combo.activated.connect(self._on_sort_activated)
-        controls.addWidget(self.sort_combo)
+        sort_layout = QHBoxLayout()
+        sort_layout.setSpacing(2)
 
+        self.sort_combo = QComboBox()
+        self._base_sort_labels = ["Title", "Artist", "Date Added", "Shuffled"]
+        self.sort_combo.addItems(self._base_sort_labels)
+        self.sort_combo.setCurrentIndex(self._commit_index)
+        self.sort_combo.activated.connect(self._on_sort_activated)
+        sort_layout.addWidget(self.sort_combo)
+
+        self.sort_dir_btn = QPushButton()
+        self.sort_dir_btn.setFixedWidth(28)
+        self.sort_dir_btn.setToolTip("Toggle ascending / descending")
+        self.sort_dir_btn.clicked.connect(self._toggle_sort_reverse)
+        self._update_dir_button_state()
+        sort_layout.addWidget(self.sort_dir_btn)
+
+        controls.addLayout(sort_layout)
         layout.addLayout(controls)
 
         self.list_widget = QListWidget()
@@ -295,46 +304,39 @@ class QueuePanel(QWidget):
 
     def set_sort_mode(self, mode, reverse=False):
         """Programmatically set the sort mode and sync internal state."""
-        # Strip arrow suffix in case caller includes it
-        base = mode.rstrip(" \u25b2\u25bc")
+        base = mode.rstrip(" \u25b2\u25bc\u2191\u2193")
         self._reverse = reverse
         self.sort_combo.blockSignals(True)
         self.sort_combo.setCurrentText(base)
         self.sort_combo.blockSignals(False)
         self._commit_index = self.sort_combo.currentIndex()
+        self._update_dir_button_state()
         self._refresh_display()
 
-    def _arrow_label(self, sort_mode, reverse):
-        if sort_mode in ("Sort by", "Shuffled"):
-            return sort_mode
-        arrow = "\u25bc" if reverse else "\u25b2"
-        return f"{sort_mode} {arrow}"
+    def _update_dir_button_state(self):
+        """Enable/disable the direction button and sync its glyph."""
+        sort_mode = self._base_sort_labels[self._commit_index]
+        is_shuffled = sort_mode == "Shuffled"
+        self.sort_dir_btn.setEnabled(not is_shuffled)
+        self.sort_dir_btn.setText("\u2193" if self._reverse else "\u2191")
 
-    def _on_sort_changed(self):
-        """Live preview when navigating the combo (arrow keys), no reverse applied."""
-        self._reverse = False
-        # Clear any arrow label from the committed index so the hovered
-        # item text reads cleanly during preview.
-        prev_label = self._base_sort_labels[self._commit_index]
-        if self.sort_combo.itemText(self._commit_index) != prev_label:
-            self.sort_combo.setItemText(self._commit_index, prev_label)
-        self._refresh_display(preview=True)
+    def _toggle_sort_reverse(self):
+        """Toggle ascending/descending when the arrow button is clicked."""
+        if not self.sort_dir_btn.isEnabled():
+            return
+        self._reverse = not self._reverse
+        self._update_dir_button_state()
+        self._refresh_display()
 
     def _on_sort_activated(self, index):
-        """Committed selection: toggle reverse if clicking the same option again."""
+        """Committed selection from the dropdown."""
         if index < 0 or index >= len(self._base_sort_labels):
             return
-        sort_mode = self._base_sort_labels[index]
-        if sort_mode == "Sort by":
-            return
-        if index == self._commit_index and sort_mode != "Shuffled":
-            self._reverse = not self._reverse
-        else:
-            self._reverse = False
-            self._commit_index = index
+        self._commit_index = index
+        self._update_dir_button_state()
         self._refresh_display()
 
-    def _refresh_display(self, preview=False):
+    def _refresh_display(self):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
         was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
@@ -343,18 +345,8 @@ class QueuePanel(QWidget):
             self._reset_scroll_on_refresh = False
 
         filter_text = self.filter_input.text().strip().casefold()
-        if preview:
-            sort_index = self.sort_combo.currentIndex()
-            sort_mode = self._base_sort_labels[sort_index] if 0 <= sort_index < len(self._base_sort_labels) else "Title"
-        else:
-            sort_index = self._commit_index
-            sort_mode = self._base_sort_labels[sort_index] if 0 <= self._commit_index < len(self._base_sort_labels) else "Title"
-            # Update the committed item text with an arrow indicator
-            label = self._arrow_label(sort_mode, self._reverse)
-            if self.sort_combo.itemText(sort_index) != label:
-                self.sort_combo.setItemText(sort_index, label)
-            if self.sort_combo.currentText() != label:
-                self.sort_combo.setCurrentText(label)
+        sort_index = self._commit_index
+        sort_mode = self._base_sort_labels[sort_index] if 0 <= sort_index < len(self._base_sort_labels) else "Title"
 
         items = list(self.items_data)
 
@@ -362,8 +354,6 @@ class QueuePanel(QWidget):
             items.sort(key=lambda x: str(x.get("title", "")).casefold(), reverse=self._reverse)
         elif sort_mode == "Artist":
             items.sort(key=lambda x: str(x.get("artist", "")).casefold(), reverse=self._reverse)
-        elif sort_mode == "Duration":
-            items.sort(key=lambda x: x.get("duration") or float("inf"), reverse=self._reverse)
         elif sort_mode == "Date Added":
             items.sort(key=lambda x: x.get("added_at") or "", reverse=self._reverse)
         elif sort_mode == "Shuffled":
@@ -391,14 +381,12 @@ class QueuePanel(QWidget):
 
         if current_idx >= 0:
             self.list_widget.setCurrentRow(current_idx)
-            if reset_scroll:
-                self.list_widget.scrollToItem(self.list_widget.item(current_idx))
         elif items:
             self.list_widget.setCurrentRow(0)
-            if reset_scroll:
-                scroll_bar.setValue(0)
 
-        if not reset_scroll:
+        if reset_scroll:
+            scroll_bar.setValue(0)
+        else:
             if was_at_bottom:
                 scroll_bar.setValue(scroll_bar.maximum())
             else:
