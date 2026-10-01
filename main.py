@@ -65,7 +65,7 @@ class MusicAppController:
         self.player.shuffle_enabled = saved_shuffle.lower() == "true"
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
         self.window.queue_panel.set_sort_mode(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=False
+            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=True
         )
         
         # Restore the last playlist or show playlists first
@@ -283,7 +283,7 @@ class MusicAppController:
         if not queue_urls:
             self.player.shuffle_enabled = False
             self.window.player_bar.set_shuffle_state(False)
-            self.window.queue_panel.set_sort_mode("Date Added", reverse=False)
+            self.window.queue_panel.set_sort_mode("Date Added", reverse=True)
             set_app_setting("shuffle_enabled", "False")
             return
 
@@ -296,7 +296,7 @@ class MusicAppController:
         self.player.toggle_shuffle(enabled)
         self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
         self.window.queue_panel.set_sort_mode(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=False
+            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=True
         )
         set_app_setting("shuffle_enabled", str(bool(self.player.shuffle_enabled)))
         self.active_queue_urls = list(queue_urls)
@@ -729,7 +729,7 @@ class MusicAppController:
         # Only force sort to "Shuffled" when shuffle mode itself is on.
         # Otherwise preserve the user's last sort preference.
         if self.player.shuffle_enabled:
-            self.window.queue_panel.set_sort_mode("Shuffled", reverse=False)
+            self.window.queue_panel.set_sort_mode("Shuffled", reverse=True)
         if playlist_id == "all":
             playlist_songs = get_all_playlist_songs_flat()
         else:
