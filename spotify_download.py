@@ -1,6 +1,7 @@
 """Import a Spotify playlist into the Music Engine library."""
 
 import os
+import re
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -27,33 +28,26 @@ SPOTIFY_CLIENT_SECRET = "9fca954348d84b658aeb2987a068ef69"
 PLAYLIST_NAME = "Spotify Import"
 MIN_VIDEO_DURATION = 45
 MAX_VIDEO_DURATION = 10 * 60
-SEARCH_RESULTS = 10          # was 20  — fewer results means faster flat searches
+SEARCH_RESULTS = 10          # results to ask YouTube for per search query
 NUM_WORKERS = 1              # one at a time to avoid bot detection
 BATCH_DELAY = 0.5            # seconds between each batch
 FAILURE_LOG_NAME = "failed_songs.txt"
 
-# These words usually mean an altered, fake or wrong version; we penalise them HEAVILY.
-_CRITICAL_BAD = [
-    "karaoke", "instrumental", "backing track", "cover", "live", "react",
-    "reaction", "trolling", "review", "tutorial", "how to", "howto",
-    "parody", "meme", "memes", "funny", "nightcore", "daycore", "8d audio",
-    "8d", " slowed", "sped up", "speed up", "nightcore", "bass boosted",
-    "1 hour", "10 hours", "hour version", "loop", "chipmunk", "earrape",
-    "high pitch", "pitch shifted", "reverb", "clean", "dirty", "demo",
-    "acoustic", "unplugged", "live session", "radio edit", "edit", "remix",
-    "mashup", "extended", "bootleg", "flip", "sped", "rewind",
+# Tiny title filters.  YouTube's own ranking already puts the original upload
+# on top for a clean "track + artist" query, so all we do is skip the obvious
+# junk.  If a word is part of the track or artist name itself (e.g. a song
+# called "Live Forever" or an official "(Acoustic)" version), it is NOT used
+# as a filter for that track.
+_FILTER_TITLE_WORDS = [
+    "karaoke", "instrumental", "backing track", "cover", "covers", "live",
+    "react", "reaction", "review", "tutorial", "how to", "parody", "meme",
+    "nightcore", "daycore", "8d", "sped up", "spedup", "speed up", "slowed",
+    "bass boosted", "reverb", "loop", "mashup", "remix", "remixes",
+    "extended", "acoustic", "unplugged",
 ]
-
-# Softer negative signals (still bad, but worth less penalty).
-_BAD_KEYWORDS = [
-    "version", "vs", "vs.", "not", "orchestra", "tribute",
-    "remastered", "remaster", "screwed", "chopped", "hour loop",
-    "recording", "no vocals", "off vocal", "midi", "synthesia",
-]
-
-_GOOD_KEYWORDS = ["official", "topic", "music video", "lyrics", "audio"]
-_OFFICIAL_CHANNELS = ["vevo", "official", "topic"]
-_STRONG_OFFICIAL = {"official music video", "official audio", "official video"}
+_FILTER_PATTERNS = [re.compile(r"\b" + re.escape(word) + r"\b") for word in _FILTER_TITLE_WORDS]
+# "1 hour", "10 minutes", "3 min" style loop uploads
+_FILTER_PATTERNS.append(re.compile(r"\b\d+\s*(?:hours?|mins?|minutes?)\b"))
 
 
 def _playlist_id(url):
@@ -67,97 +61,46 @@ def _spotify_client():
     ))
 
 
-def _score_result(entry, track_name, artist_name, expected_seconds=None):
-    """Score a YouTube result; higher is better."""
-    title = (entry.get("title") or "").lower().strip()
-    uploader = (entry.get("uploader") or entry.get("channel") or "").lower().strip()
-    score = 0
+def _title_is_filtered(title, track_name, artist_name):
+    """Return True when a result title looks like a live or altered version.
 
-    track_name = track_name.lower().strip()
-    artist_name = artist_name.lower().strip()
+    Only obvious junk is filtered (karaoke, nightcore, hour-long loops, ...).
+    Words that appear in the track or artist name itself never count, so a
+    song genuinely called "Live Forever" still matches normally.
+    """
+    title = (title or "").lower().strip()
+    if not title:
+        return False
+    name = f"{track_name} {artist_name}".lower()
+    for pattern in _FILTER_PATTERNS:
+        if pattern.search(title) and not pattern.search(name):
+            return True
+    return False
 
-    # --- Exact / strong matches ---
-    if track_name in title:
-        score += 20
-    if artist_name in title:
-        score += 12
-    if artist_name in uploader:
-        score += 15
 
-    # --- Official channel / uploader bonus ---
-    for official in _OFFICIAL_CHANNELS:
-        if official in uploader:
-            score += 8
-            break
+def _duration_ok(duration, expected_seconds=None):
+    """Tiny length sanity check: no tiny clips, no hour-long uploads.
 
-    # --- Strong official title phrase bonus ---
-    for phrase in _STRONG_OFFICIAL:
-        if phrase in title:
-            score += 6
-            break
-
-    # --- Penalize critical karaoke/parody keywords so they never win ---
-    for word in _CRITICAL_BAD:
-        if word in title:
-            score -= 100
-
-    # --- Penalize other bad keywords ---
-    for word in _BAD_KEYWORDS:
-        if word in title:
-            score -= 15
-
-    # --- Good keyword bonus ---
-    for word in _GOOD_KEYWORDS:
-        if word in title:
-            score += 5
-
-    # --- Prefer videos where title is close to just track + artist ---
-    # Penalise extra words in title (longer titles are often compilations / parodies / karaoke)
-    extra_words = len(title.split()) - len(track_name.split()) - len(artist_name.split())
-    if extra_words > 3:
-        score -= min(extra_words * 2, 20)
-
-    # --- Duration checks ---
-    duration = entry.get("duration")
-    if duration:
-        if duration < MIN_VIDEO_DURATION:
-            score -= 20
-        elif duration > MAX_VIDEO_DURATION:
-            score -= 25
-        elif 120 <= duration <= 420:
-            score += 6
-
-    # --- Strong duration match bonus ---
-    if expected_seconds and duration:
-        diff = abs(duration - expected_seconds)
-        if diff < 5:
-            score += 35
-        elif diff < 15:
-            score += 25
-        elif diff < 30:
-            score += 15
-        elif diff < 60:
-            score += 8
-
-    # --- View count popularity bonus (official videos often have views) ---
-    view_count = entry.get("view_count") or 0
-    if isinstance(view_count, int) and view_count > 0:
-        if view_count > 10_000_000:
-            score += 8
-        elif view_count > 1_000_000:
-            score += 5
-        elif view_count > 100_000:
-            score += 2
-
-    # --- If track name completely missing from title, heavy penalty ---
-    if track_name not in title:
-        score -= 15
-
-    return score
+    When Spotify's track length is known we also skip results wildly off it
+    (e.g. a 'song X for 10 minutes' loop), but normal music-video intro and
+    outro differences are far within the tolerance.
+    """
+    if duration < MIN_VIDEO_DURATION or duration > MAX_VIDEO_DURATION:
+        return False
+    if expected_seconds:
+        if duration > expected_seconds * 2.5 or duration * 2.5 < expected_seconds:
+            return False
+    return True
 
 
 def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
-    """Search YouTube and return the best matching, available video (two-phase)."""
+    """Search YouTube with clean keywords and return its first good result.
+
+    YouTube's own search ranking already puts the original upload on top for
+    a clean "track + artist" query, so we trust it and simply walk down the
+    results, taking the first one that passes a few tiny filters (no live
+    streams, sane length, no karaoke/altered versions) and is downloadable.
+    """
 
     from db import get_ytdlp_cookie_options
     cookie_opt = get_ytdlp_cookie_options()
@@ -182,95 +125,66 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
     safe_artist = artist_name.replace('"', '')
     queries = [
         f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist}',
-        f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist} official audio',
-        f'ytsearch{SEARCH_RESULTS}:"{safe_track}" {safe_artist} lyrics',
         f'ytsearch{SEARCH_RESULTS}:{safe_track} {safe_artist}',
     ]
 
-    # ---- Phase 1: fast flat search ----
+    # ---- Walk YouTube's results in order and take the first good one ----
     t0 = time.time()
-    all_flat = []
+    seen_ids = set()
     for query in queries:
         try:
             with YoutubeDL(flat_opts) as ydl:
                 info = ydl.extract_info(query, download=False)
         except Exception:
             continue
+
         for e in (info.get("entries") or []) if info else []:
-            if not e or not e.get("id"):
+            if not e or not e.get("id") or e["id"] in seen_ids:
                 continue
-            all_flat.append(e)
+            seen_ids.add(e["id"])
 
-    if not all_flat:
-        return None
+            # ---- tiny filters: live streams, silly lengths, karaoke-style titles ----
+            if e.get("is_live"):
+                continue
+            dur = e.get("duration")
+            if dur is not None and not _duration_ok(dur, expected_seconds):
+                continue
+            if _title_is_filtered(e.get("title"), track_name, artist_name):
+                continue
 
-    # de-dupe + pre-filter live / duration
-    seen_ids = set()
-    candidates = []
-    for e in all_flat:
-        vid = e.get("id")
-        if not vid or vid in seen_ids:
-            continue
-        seen_ids.add(vid)
-        if e.get("is_live"):
-            continue
-        dur = e.get("duration")
-        if dur is not None and (dur < MIN_VIDEO_DURATION or dur > MAX_VIDEO_DURATION):
-            continue
-        candidates.append(e)
+            # ---- verify the pick is actually playable before returning it ----
+            url = e.get("webpage_url") or f"https://www.youtube.com/watch?v={e['id']}"
+            try:
+                with YoutubeDL(full_opts) as ydl:
+                    full = ydl.extract_info(url, download=False)
+            except Exception:
+                continue
+            if not full or full.get("is_live"):
+                continue
+            dur = full.get("duration")
+            if dur is not None and not _duration_ok(dur, expected_seconds):
+                continue
 
-    if not candidates:
-        return None
+            uploader = (
+                full.get("uploader")
+                or full.get("channel")
+                or full.get("creator")
+                or full.get("artist")
+            )
+            print(
+                f"[search] '{track_name}' done in {(time.time()-t0):.2f}s → {full.get('title', 'unknown')!r} "
+                f"(uploader={uploader or 'unknown'}, views={full.get('view_count') or 'unknown'})",
+                flush=True,
+            )
+            return {
+                "url": full.get("webpage_url") or url,
+                "thumbnail": full.get("thumbnail"),
+                "uploader": uploader,
+                "view_count": full.get("view_count"),
+            }
 
-    # Rank using the SAME _score_result function (flat entries just have fewer fields,
-    # missing fields default to None / 0 which is safe).
-    candidates.sort(
-        key=lambda e: _score_result(e, track_name, artist_name, expected_seconds),
-        reverse=True,
-    )
-
-    # ---- Phase 2: full extraction on best candidates only ----
-    # Try the top N.  Most tracks resolve in the first 3, but 6 gives a safety margin.
-    top_n = min(6, len(candidates))
-    enriched = []
-    for e in candidates[:top_n]:
-        url = e.get("webpage_url") or f"https://www.youtube.com/watch?v={e['id']}"
-        try:
-            with YoutubeDL(full_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-        except Exception:
-            continue
-        if not info or info.get("is_live"):
-            continue
-        dur = info.get("duration")
-        if dur is not None and (dur < MIN_VIDEO_DURATION or dur > MAX_VIDEO_DURATION):
-            continue
-        enriched.append(info)
-
-    if not enriched:
-        return None
-
-    enriched.sort(
-        key=lambda e: _score_result(e, track_name, artist_name, expected_seconds),
-        reverse=True,
-    )
-    winner = enriched[0]
-    yt_artist = (
-        winner.get("uploader")
-        or winner.get("channel")
-        or winner.get("creator")
-        or winner.get("artist")
-    )
-    print(
-        f"[search] '{track_name}' done in {(time.time()-t0):.2f}s → {winner.get('title', 'unknown')!r} "
-        f"(uploader={winner.get('uploader') or winner.get('channel') or 'unknown'})",
-        flush=True,
-    )
-    return {
-        "url": winner.get("webpage_url") or f"https://www.youtube.com/watch?v={winner['id']}",
-        "thumbnail": winner.get("thumbnail"),
-        "uploader": yt_artist,
-    }
+    print(f"[search] '{track_name}' done in {(time.time()-t0):.2f}s → no usable result", flush=True)
+    return None
 
 
 def _tracks(client, playlist_url):

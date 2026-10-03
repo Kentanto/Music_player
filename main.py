@@ -45,6 +45,7 @@ class MusicAppController:
         self.spotify_import_worker = None
         self.cec_remote = None
         self.gamepad = None
+        self.mpris = None  # Linux MPRIS bridge (installed in install_mpris)
         self.active_queue_urls = []
         self.current_playlist_id = None
         
@@ -76,6 +77,8 @@ class MusicAppController:
     
     def on_player_position_changed(self, position_ms):
         """Update seek bar as song plays"""
+        if self.mpris:
+            self.mpris.set_position_ms(position_ms)
         duration_ms = self.player.get_duration()
         if duration_ms > 0:
             position_fraction = position_ms / duration_ms
@@ -86,6 +89,8 @@ class MusicAppController:
     
     def on_player_duration_changed(self, duration_ms):
         """Update total duration display"""
+        if self.mpris:
+            self.mpris.set_track_length(duration_ms)
         self.window.update_player_time(0, duration_ms / 1000)
         self.window.fullscreen_player.set_time(0, duration_ms / 1000)
     
@@ -94,6 +99,14 @@ class MusicAppController:
         is_playing = state == self.player.player.PlaybackState.PlayingState
         self.window.player_bar.set_play_pause_state(is_playing)
         self.window.fullscreen_player.set_play_pause_state(is_playing)
+        if self.mpris:
+            if state == self.player.player.PlaybackState.PlayingState:
+                self.mpris.set_playback_status("Playing")
+            elif state == self.player.player.PlaybackState.PausedState:
+                self.mpris.set_playback_status("Paused")
+            else:
+                self.mpris.set_playback_status("Stopped")
+            self._push_mpris_capabilities()
     
     def connect_handlers(self):
         """Connect UI signals to business logic"""
@@ -271,6 +284,93 @@ class MusicAppController:
         self._refresh_queue_display()
         self._update_now_playing()
 
+    # ---------- MPRIS (Linux media keys / media widgets) ----------
+    def install_mpris(self):
+        """Register the app as an MPRIS media player so the desktop's
+        media keys control playback even when the window is unfocused."""
+        if sys.platform == "win32":
+            return None
+        try:
+            from mpris_service import MprisService
+            self.mpris = MprisService()
+        except Exception as error:
+            print(f"[MPRIS] unavailable: {error}", flush=True)
+            self.mpris = None
+            return None
+
+        m = self.mpris
+        m.play_pause_requested.connect(self.handle_play_pause)
+        m.play_requested.connect(self.handle_resume)
+        m.pause_requested.connect(self.handle_pause)
+        m.next_requested.connect(self.handle_next)
+        m.previous_requested.connect(self.handle_prev)
+        m.stop_requested.connect(self.handle_mpris_stop)
+        m.seek_requested.connect(self.handle_mpris_seek)
+        m.set_position_requested.connect(self.handle_mpris_set_position)
+        m.shuffle_requested.connect(self.handle_shuffle_toggle)
+        m.volume_requested.connect(lambda v: self.handle_volume_change(int(round(v * 100))))
+        m.raise_requested.connect(self.handle_mpris_raise)
+        m.quit_requested.connect(self.handle_mpris_quit)
+
+        # Publish the current player state so widgets start in sync.
+        self.mpris.set_volume(max(0, min(self.player.volume, 100)) / 100.0)
+        self.mpris.set_shuffle(self.player.shuffle_enabled)
+        self._push_mpris_capabilities()
+        return self.mpris
+
+    def _push_mpris_capabilities(self):
+        if not self.mpris:
+            return
+        queue = self.player.queue or []
+        index = self.player.index
+        state = self.player.player.playbackState()
+        playing = state == self.player.player.PlaybackState.PlayingState
+        paused = state == self.player.player.PlaybackState.PausedState
+        self.mpris.set_capabilities(
+            can_play=bool(self.player._current_item),
+            can_pause=playing or paused,
+            can_go_next=0 <= index + 1 < len(queue),
+            can_go_previous=index > 0,
+            can_seek=self.player.get_duration() > 0,
+        )
+
+    def handle_mpris_stop(self):
+        self.player.stop()
+
+    def handle_mpris_seek(self, delta_ms):
+        duration = self.player.get_duration()
+        if duration <= 0:
+            return
+        target = max(0, min(self.player.get_position() + int(delta_ms), duration - 1))
+        self.player.player.setPosition(target)
+        if self.mpris:
+            # Keep the polled Position accurate even while paused.
+            self.mpris.set_position_ms(target)
+            self.mpris.emit_seeked(target)
+
+    def handle_mpris_set_position(self, position_ms):
+        duration = self.player.get_duration()
+        if duration <= 0:
+            return
+        target = max(0, min(int(position_ms), duration - 1))
+        self.player.player.setPosition(target)
+        if self.mpris:
+            # Keep the polled Position accurate even while paused.
+            self.mpris.set_position_ms(target)
+            self.mpris.emit_seeked(target)
+
+    def handle_mpris_raise(self):
+        window = self.window
+        if window.isMinimized():
+            window.showNormal()
+        else:
+            window.show()
+        window.raise_()
+        window.activateWindow()
+
+    def handle_mpris_quit(self):
+        QApplication.quit()
+
     def handle_volume_mute(self):
         self.player.toggle_mute()
 
@@ -286,6 +386,8 @@ class MusicAppController:
             self.window.player_bar.set_shuffle_state(False)
             self.window.queue_panel.set_sort_mode("Date Added", reverse=True)
             set_app_setting("shuffle_enabled", "False")
+            if self.mpris:
+                self.mpris.set_shuffle(False)
             return
 
         current_item = self.player._current_item
@@ -302,6 +404,8 @@ class MusicAppController:
         set_app_setting("shuffle_enabled", str(bool(self.player.shuffle_enabled)))
         self.active_queue_urls = list(queue_urls)
         self._refresh_queue_display()
+        if self.mpris:
+            self.mpris.set_shuffle(self.player.shuffle_enabled)
     
     def handle_load_playlists(self):
         """Load playlist list for browsing. Appends a synthetic \"All Songs\" playlist."""
@@ -491,6 +595,8 @@ class MusicAppController:
         self.player.set_volume(value)
         self.window.player_bar.set_volume(value)
         self.window.fullscreen_player.set_volume(value)
+        if self.mpris:
+            self.mpris.set_volume(max(0, min(int(value), 100)) / 100.0)
 
     def handle_volume_up(self):
         """Bump volume up by 5."""
@@ -505,6 +611,8 @@ class MusicAppController:
     def handle_seek(self, position):
         """Seek to position (0.0-1.0)"""
         self.player.seek(position)
+        if self.mpris:
+            self.mpris.emit_seeked(self.player.get_position())
 
     def handle_seek_delta(self, seconds):
         """Move playback by a fixed number of seconds."""
@@ -513,6 +621,8 @@ class MusicAppController:
             return
         position = self.player.get_position() + int(seconds * 1000)
         self.player.seek(max(0.0, min(position / duration, 1.0)))
+        if self.mpris:
+            self.mpris.emit_seeked(self.player.get_position())
 
     def handle_fullscreen(self):
         fullscreen = self.window.fullscreen_player
@@ -548,6 +658,8 @@ class MusicAppController:
             self.cec_remote.stop()
         if self.gamepad:
             self.gamepad.stop()
+        if self.mpris:
+            self.mpris.shutdown()
         self.player.stop()
     
     def _start_metadata_fetcher(self):
@@ -585,6 +697,9 @@ class MusicAppController:
             self.window.player_bar.set_track_info("No track selected")
             self.window.fullscreen_player.set_track_info("No track selected", "")
             self.window.fullscreen_player.set_cover_art(QPixmap())
+            if self.mpris:
+                self.mpris.clear_track()
+                self._push_mpris_capabilities()
             return
 
         queue_sources = []
@@ -613,6 +728,14 @@ class MusicAppController:
         self.window.fullscreen_player.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self._set_cover_art(artwork)
         self.window.player_bar.set_track_info(title or "Unknown track")
+        if self.mpris:
+            self.mpris.set_track(
+                title or "Unknown track",
+                artist or "Unknown Artist",
+                artwork,
+                length_ms=self.player.get_duration(),
+            )
+            self._push_mpris_capabilities()
 
     def _track_display_data(self, item):
         """Resolve title, artist, and artwork for a queue item."""
@@ -954,8 +1077,13 @@ if __name__ == "__main__":
 
     app.aboutToQuit.connect(controller.shutdown)
 
-    media_filter = install_media_hotkeys(app, window)
-    if media_filter is None:
-        print("Global media hotkeys are unavailable on this platform or missing dependencies.")
+    if sys.platform == "win32":
+        media_filter = install_media_hotkeys(app, window)
+        if media_filter is None:
+            print("Global media hotkeys are unavailable on this platform or missing dependencies.")
+    else:
+        # Linux: register an MPRIS service so the desktop's media keys,
+        # media widgets, and OSD control the player even when unfocused.
+        controller.install_mpris()
 
     sys.exit(app.exec())

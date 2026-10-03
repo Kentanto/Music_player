@@ -46,9 +46,9 @@ from db import (
     get_playlists,
 )
 
-FAILURE_LOG = Path("playlists/Mixer/failed_songs.txt")
+FAILURE_LOG = Path("playlists/Olai/failed_songs.txt")
 RETRY_LOG = FAILURE_LOG.with_name("retry_log.txt")
-PLAYLIST_NAME = "Mixer"
+PLAYLIST_NAME = "Olai"
 DELAY_SEC = 12  # pause between songs to avoid bot wall
 
 
