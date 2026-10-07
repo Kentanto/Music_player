@@ -12,7 +12,8 @@ import argparse
 from pathlib import Path
 from datetime import datetime
 
-# Parse CLI args early so we can set cookie env vars before importing anything that reads them.
+
+
 _parser = argparse.ArgumentParser(description="Retry failed song downloads.")
 _parser.add_argument(
     "--browser",
@@ -46,9 +47,9 @@ from db import (
     get_playlists,
 )
 
-FAILURE_LOG = Path("playlists/Olai/failed_songs.txt")
+PLAYLIST_NAME = "Mixer"
+FAILURE_LOG = Path(f"playlists/{PLAYLIST_NAME}/failed_songs.txt")
 RETRY_LOG = FAILURE_LOG.with_name("retry_log.txt")
-PLAYLIST_NAME = "Olai"
 DELAY_SEC = 12  # pause between songs to avoid bot wall
 
 
