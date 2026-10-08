@@ -86,6 +86,9 @@ class MainWindow(QMainWindow):
         self.fullscreen_player = FullscreenPlayer(self)
 
         self._remote_highlighted = None
+        # True while the highlighted widget is a text field the user has
+        # clicked into or typed in — the idle-clear must not steal its focus.
+        self._remote_keep_focus = False
         self._remote_clear_timer = QTimer(self)
         self._remote_clear_timer.setSingleShot(True)
         self._remote_clear_timer.setInterval(8000)
@@ -162,6 +165,12 @@ class MainWindow(QMainWindow):
                     self._remote_highlighted.setProperty("remoteHighlight", False)
                     self._refresh_widget_style(self._remote_highlighted)
                 self._remote_highlighted = target
+                # A text field focused directly by the user (mouse click, tab,
+                # window switch) must never lose focus to the idle-clear.
+                self._remote_keep_focus = isinstance(target, QLineEdit) and event.reason() in (
+                    Qt.MouseFocusReason, Qt.TabFocusReason, Qt.BacktabFocusReason,
+                    Qt.ActiveWindowFocusReason, Qt.ShortcutFocusReason,
+                )
                 # Only show green border when appropriate
                 if self._should_highlight(target):
                     target.setProperty("remoteHighlight", True)
@@ -174,6 +183,12 @@ class MainWindow(QMainWindow):
             target = self._find_nav_target_for_widget(watched)
             if target is None:
                 return super().eventFilter(watched, event)
+
+            # Typing in the highlighted text field means hands-on use: keep
+            # focus there and defer the idle-clear while the user is active.
+            if target is self._remote_highlighted and isinstance(target, QLineEdit):
+                self._remote_keep_focus = True
+                self._remote_clear_timer.start()
 
             # ── Layer check: slider adjust mode ──
             if isinstance(target, QSlider) and self._slider_adjust_target is target:
@@ -674,6 +689,7 @@ class MainWindow(QMainWindow):
             self._refresh_widget_style(self._remote_highlighted)
 
         self._remote_highlighted = target
+        self._remote_keep_focus = False
         target.setFocus(Qt.OtherFocusReason)
 
         if self._should_highlight(target):
@@ -722,10 +738,16 @@ class MainWindow(QMainWindow):
     def clear_remote_highlight(self):
         if self._remote_highlighted is None:
             return
-        self._remote_highlighted.setProperty("remoteHighlight", False)
-        self._refresh_widget_style(self._remote_highlighted)
-        self._remote_highlighted.clearFocus()
+        target = self._remote_highlighted
+        target.setProperty("remoteHighlight", False)
+        self._refresh_widget_style(target)
+        # Only give up focus when the highlight came from remote navigation.
+        # A text field the user clicked into or typed in keeps keyboard focus;
+        # only the highlight border is removed.
+        if not self._remote_keep_focus:
+            target.clearFocus()
         self._remote_highlighted = None
+        self._remote_keep_focus = False
 
     @staticmethod
     def _refresh_widget_style(widget):
