@@ -53,8 +53,8 @@ class EQVisualizer(QWidget):
         super().mousePressEvent(event)
 
     def _progress_from_x(self, x):
-        left = 16
-        right = max(left + 1, self.width() - 16)
+        left = 12
+        right = max(left + 1, self.width() - 12)
         return max(0.0, min(1.0, (x - left) / (right - left)))
 
     @Slot(object)

@@ -5,7 +5,6 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QLabel,
     QPushButton,
-    QSlider,
     QSizePolicy,
     QStackedLayout,
     QGraphicsOpacityEffect,
@@ -15,20 +14,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QTimer, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap, QRegion, QIcon
 
+from .clickable_slider import FocusAwareSlider
 from .eq_visualizer import EQVisualizer
-
-
-class FocusAwareSlider(QSlider):
-    """Slider that emits focus_changed(bool) for external highlight wiring."""
-    focus_changed = Signal(bool)
-
-    def focusInEvent(self, event):
-        super().focusInEvent(event)
-        self.focus_changed.emit(True)
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        self.focus_changed.emit(False)
 
 
 class EQProgressBadge(QWidget):
@@ -232,7 +219,7 @@ class FullscreenPlayer(QWidget):
         eq_progress_layout.setSpacing(0)
         eq_progress_layout.addWidget(self.eq_visualizer, 0, 0)
 
-        self.eq_seek_slider = QSlider(Qt.Horizontal)
+        self.eq_seek_slider = FocusAwareSlider(Qt.Horizontal)
         self.eq_seek_slider.setRange(0, 100)
         self.eq_seek_slider.setObjectName("fullscreenEQSeek")
         self.eq_seek_slider.sliderMoved.connect(
@@ -246,6 +233,8 @@ class FullscreenPlayer(QWidget):
         self.eq_progress_badge.setObjectName("fullscreenEQProgressBadge")
         self.eq_progress_badge.setFixedSize(18, 18)
         self.eq_progress_badge.setMask(QRegion(self.eq_progress_badge.rect(), QRegion.Ellipse))
+        # Clicks on the badge must reach the seek slider underneath it.
+        self.eq_progress_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.eq_progress_badge.raise_()
         self._seek_position = 0.0
         self._eq_progress_overlay = eq_progress_overlay

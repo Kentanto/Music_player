@@ -1,20 +1,9 @@
 from PySide6.QtWidgets import (
-    QWidget, QHBoxLayout, QPushButton, QSlider, QLabel, QVBoxLayout
+    QWidget, QHBoxLayout, QPushButton, QLabel, QVBoxLayout
 )
 from PySide6.QtCore import Qt, Signal
 
-
-class FocusAwareSlider(QSlider):
-    """Slider that emits focus_changed(bool) for external highlight wiring."""
-    focus_changed = Signal(bool)
-
-    def focusInEvent(self, event):
-        super().focusInEvent(event)
-        self.focus_changed.emit(True)
-
-    def focusOutEvent(self, event):
-        super().focusOutEvent(event)
-        self.focus_changed.emit(False)
+from .clickable_slider import FocusAwareSlider
 
 
 class PlayerBar(QWidget):

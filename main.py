@@ -868,6 +868,25 @@ class MusicAppController:
         self.player.set_queue(urls, current_item=self.player._current_item)
         self._update_now_playing()
 
+    def _current_visual_order(self, fallback=None):
+        """Return song sources in the exact order shown in the queue panel.
+
+        current_results stays in original database order, so rebuilding the
+        playback queue from it would silently discard the user's active sort
+        and its direction. The queue panel's items_data always mirrors the
+        visible, sorted order, so prefer that.
+        """
+        sources = [
+            item.get("file_path") or item.get("url")
+            for item in getattr(self.window.queue_panel, "items_data", [])
+        ]
+        sources = [source for source in sources if source]
+        if sources:
+            return sources
+        if fallback:
+            return list(fallback)
+        return []
+
     def handle_open_playlist(self, playlist_id):
         self.current_playlist_id = playlist_id
         # Clear search inputs when opening a playlist (fresh context)
@@ -947,11 +966,22 @@ class MusicAppController:
             for track in self.current_results
             if track.get("file_path") or track.get("url")
         ]
-        self.active_queue_urls = remaining_urls
+        # Rebuild the queue in the order currently shown on-screen so the
+        # active sort and its direction survive deleting a song.
+        # current_results is in database order; rebuilding from it silently
+        # reversed the play order whenever the view was sorted descending.
+        ordered_remaining = [
+            url
+            for url in self._current_visual_order(fallback=remaining_urls)
+            if url and url != source
+        ]
+        if not ordered_remaining:
+            ordered_remaining = remaining_urls
+        self.active_queue_urls = ordered_remaining
         current_item = self.player._current_item
-        if current_item not in remaining_urls:
-            current_item = remaining_urls[0] if remaining_urls else None
-        self.player.set_queue(remaining_urls, current_item=current_item)
+        if current_item not in ordered_remaining:
+            current_item = ordered_remaining[0] if ordered_remaining else None
+        self.player.set_queue(ordered_remaining, current_item=current_item)
         self._refresh_queue_display()
         self._update_now_playing()
 
@@ -993,9 +1023,11 @@ class MusicAppController:
                 if track.get("file_path") == old_path:
                     track["title"] = new_title
                     track["file_path"] = new_path
+            # Keep the queue in the order currently shown on-screen (the
+            # user's active sort), not database order.
             self.active_queue_urls = [
                 new_path if source == old_path else source
-                for source in self.active_queue_urls
+                for source in self._current_visual_order(fallback=self.active_queue_urls)
             ]
             current_item = new_path if self.player._current_item == old_path else self.player._current_item
             self.player.set_queue(self.active_queue_urls, current_item=current_item)
