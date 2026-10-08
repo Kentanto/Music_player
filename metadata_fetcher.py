@@ -65,6 +65,15 @@ class MetadataFetcher(QThread):
 
         self.fetching_done.emit()
 
+    def request_stop(self):
+        """Ask the thread to stop without blocking the caller.
+
+        stop() waits for the in-flight yt-dlp request to finish, which can
+        take a long time on a slow network — never call it from the UI
+        thread while the user is interacting.
+        """
+        self.should_stop = True
+
     def stop(self):
         self.should_stop = True
         self.wait()

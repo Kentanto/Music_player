@@ -34,6 +34,7 @@ class ThumbnailLoader(QNetworkAccessManager):
         super().__init__(parent)
         self._thumb_cache = {}
         self._in_flight = {}
+        self._callbacks = {}
         self.finished.connect(self._on_reply_finished)
 
     def request_thumb(self, url, list_widget):
@@ -57,9 +58,27 @@ class ThumbnailLoader(QNetworkAccessManager):
         self.get(req)
         return None
 
+    def fetch_async(self, url, callback):
+        """Fetch a remote thumbnail for a non-list target (cover art) and
+        call callback(QPixmap or None) when done, so the UI thread never
+        blocks on a network download."""
+        if not url or not isinstance(url, str):
+            callback(None)
+            return
+        cached = self._thumb_cache.get(url)
+        if cached is not None:
+            callback(cached)
+            return
+        self._callbacks.setdefault(url, []).append(callback)
+        if url not in self._in_flight:
+            self._in_flight[url] = []
+            req = QNetworkRequest(QUrl(url))
+            self.get(req)
+
     def _on_reply_finished(self, reply: QNetworkReply):
         url = reply.url().toString()
         widgets = self._in_flight.pop(url, [])
+        callbacks = self._callbacks.pop(url, [])
         if reply.error() == QNetworkReply.NoError:
             data = reply.readAll()
             if data:
@@ -68,6 +87,12 @@ class ThumbnailLoader(QNetworkAccessManager):
                     self._thumb_cache[url] = pix
                     for widget in widgets:
                         widget.viewport().update()
+                    for callback in callbacks:
+                        callback(pix)
+                    reply.deleteLater()
+                    return
+        for callback in callbacks:
+            callback(None)
         reply.deleteLater()
 
     @classmethod
@@ -277,6 +302,25 @@ class QueuePanel(QWidget):
         self.current_item_source = current_item_source
         self._reset_scroll_on_refresh = True
         self._refresh_display()
+
+    def update_item_data(self, url, data):
+        """Refresh one row's data in place (metadata enrichment).
+
+        QListWidgetItem keeps a *copy* of the item dict, so in-place
+        mutations are not picked up — rewrite just that row's data and
+        repaint.  No clear/re-add: selection, hover and scroll position
+        stay untouched, so browsing/clicking is never interrupted.
+        """
+        if not url:
+            return
+        for row in range(self.list_widget.count()):
+            item = self.list_widget.item(row)
+            existing = item.data(Qt.UserRole)
+            if not existing or (existing.get("url") != url and existing.get("file_path") != url):
+                continue
+            item.setData(Qt.UserRole, data)
+            break
+        self.list_widget.viewport().update()
 
     def set_playback_order(self, ordered_sources, current_source=None, queued_next=None, reset_scroll=False):
         source_map = {}

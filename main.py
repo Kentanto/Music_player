@@ -1,14 +1,15 @@
 import sys
-import urllib.request
 import warnings
 from pathlib import Path
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt
 
 from ui import MainWindow
+from ui.queue_panel import ThumbnailLoader
 from player import Player
 from media_hotkeys import install_media_hotkeys
-from search import search_youtube
+from search import SearchWorker
 from db import (
     init_db,
     create_playlist,
@@ -42,6 +43,11 @@ class MusicAppController:
         self.player = Player()
         self.current_results = []
         self.metadata_fetcher = None  # Background thread for duration checking
+        self.search_worker = None  # Background thread for YouTube searches
+        self._search_generation = 0  # Drops results from superseded searches
+        self._retired_fetchers = []  # Retired fetchers kept alive until they exit
+        self._retired_search_workers = []  # Retired search workers, same
+        self._cover_token = 0  # Drops superseded cover-art loads
         self.spotify_import_worker = None
         self.cec_remote = None
         self.gamepad = None
@@ -166,10 +172,35 @@ class MusicAppController:
             self.gamepad.start()
     
     def handle_search(self, query):
-        """Search YouTube for songs"""
+        """Search YouTube for songs (off the UI thread)."""
         print(f"Searching: {query}")
-        self.current_results = search_youtube(query)
-        
+        self._search_generation += 1
+        generation = self._search_generation
+
+        # Retire an in-flight search without blocking the UI thread; its
+        # results get dropped by the generation check when they arrive.
+        self._retired_search_workers = [w for w in self._retired_search_workers if w.isRunning()]
+        if self.search_worker and self.search_worker.isRunning():
+            self._retired_search_workers.append(self.search_worker)
+
+        # Busy cursor so the user sees the search is running (app stays live).
+        QApplication.restoreOverrideCursor()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        self.search_worker = SearchWorker(query)
+        self.search_worker.search_finished.connect(
+            lambda results, g=generation: self._on_search_results(g, results)
+        )
+        self.search_worker.start()
+
+    def _on_search_results(self, generation, results):
+        """Show search results unless a newer search or view switch happened."""
+        QApplication.restoreOverrideCursor()
+        if generation != self._search_generation:
+            print("[search] stale search results dropped", flush=True)
+            return
+        self.current_results = results or []
+
         # Start background metadata fetcher to remove long videos
         if self.current_results:
             self._start_metadata_fetcher()
@@ -409,6 +440,9 @@ class MusicAppController:
     
     def handle_load_playlists(self):
         """Load playlist list for browsing. Appends a synthetic \"All Songs\" playlist."""
+        # Any in-flight search is stale now; don't let it replace this view.
+        self._search_generation += 1
+        QApplication.restoreOverrideCursor()
         self.current_playlist_id = None
         playlists = get_playlists()
         display_data = [
@@ -650,7 +684,14 @@ class MusicAppController:
     def shutdown(self): 
         """Stop background work before Qt destroys the application."""
         if self.metadata_fetcher and self.metadata_fetcher.isRunning():
-            self.metadata_fetcher.stop()
+            self.metadata_fetcher.request_stop()
+            self.metadata_fetcher.wait(3000)
+        for fetcher in self._retired_fetchers:
+            fetcher.wait(1000)
+        if self.search_worker and self.search_worker.isRunning():
+            self.search_worker.wait(2000)
+        for worker in self._retired_search_workers:
+            worker.wait(1000)
         if self.spotify_import_worker and self.spotify_import_worker.isRunning():
             self.spotify_import_worker.quit()
             self.spotify_import_worker.wait()
@@ -664,8 +705,14 @@ class MusicAppController:
     
     def _start_metadata_fetcher(self):
         """Start background thread to fetch metadata and remove long videos"""
-        if self.metadata_fetcher:
-            self.metadata_fetcher.stop()
+        # Retire any previous fetcher WITHOUT waiting for it.  The old stop()
+        # blocked the UI thread until the in-flight yt-dlp request finished,
+        # which froze the app mid-search on slow networks.
+        self._retired_fetchers = [f for f in self._retired_fetchers if f.isRunning()]
+        if self.metadata_fetcher and self.metadata_fetcher.isRunning():
+            old = self.metadata_fetcher
+            old.request_stop()  # non-blocking: just flags the thread
+            self._retired_fetchers.append(old)
 
         self.metadata_fetcher = MetadataFetcher(self.current_results, max_duration=600)
         self.metadata_fetcher.video_too_long.connect(self._on_video_too_long)
@@ -674,19 +721,20 @@ class MusicAppController:
 
     def _on_metadata_ready(self, url, metadata):
         """Enrich search result dicts with fetched duration/artist/thumbnail."""
-        updated = False
         for result in self.current_results:
-            if result.get("url") == url:
-                if metadata.get("duration"):
-                    result["duration"] = metadata["duration"]
-                if metadata.get("artist"):
-                    result["artist"] = metadata["artist"]
-                if metadata.get("thumbnail"):
-                    result["thumbnail"] = metadata["thumbnail"]
-                updated = True
-                break
-        if updated:
-            self._refresh_queue_display()
+            if result.get("url") != url:
+                continue
+            if metadata.get("duration"):
+                result["duration"] = metadata["duration"]
+            if metadata.get("artist"):
+                result["artist"] = metadata["artist"]
+            if metadata.get("thumbnail"):
+                result["thumbnail"] = metadata["thumbnail"]
+            # Refresh only this row in place.  Rebuilding the whole list on
+            # every metadata arrival made rows flicker and broke clicking
+            # during the ~10s the background fetcher runs after a search.
+            self.window.queue_panel.update_item_data(url, result)
+            break
 
     def _update_now_playing(self):
         """Update the UI with the currently playing track title and artwork."""
@@ -754,23 +802,33 @@ class MusicAppController:
         return title, artist, artwork
 
     def _set_cover_art(self, artwork):
-        """Load local artwork or a search thumbnail into the cover panel."""
+        """Load local artwork immediately; fetch remote art asynchronously so
+        the UI thread never blocks on a slow thumbnail download."""
+        self._cover_token += 1
+        token = self._cover_token
+
         if not artwork:
-            self.window.cover_widget.clear_cover_art()
-            self.window.fullscreen_player.set_cover_art(QPixmap())
+            self._apply_cover_art(None, token)
             return
 
         if isinstance(artwork, str) and Path(artwork).exists():
-            pixmap = QPixmap(artwork)
-        else:
-            try:
-                with urllib.request.urlopen(artwork, timeout=10) as response:
-                    pixmap = QPixmap()
-                    pixmap.loadFromData(response.read())
-            except Exception:
-                pixmap = QPixmap()
+            self._apply_cover_art(QPixmap(artwork), token)
+            return
 
-        if pixmap.isNull():
+        cached = ThumbnailLoader.cached_pixmap(artwork)
+        if cached is not None:
+            self._apply_cover_art(cached, token)
+            return
+
+        ThumbnailLoader.instance().fetch_async(
+            artwork, lambda pix, t=token: self._apply_cover_art(pix, t)
+        )
+
+    def _apply_cover_art(self, pixmap, token):
+        """Apply cover art unless a newer selection superseded it meanwhile."""
+        if token != self._cover_token:
+            return
+        if pixmap is None or pixmap.isNull():
             self.window.cover_widget.clear_cover_art()
             self.window.fullscreen_player.set_cover_art(QPixmap())
         else:
@@ -781,8 +839,13 @@ class MusicAppController:
         """Remove a video from results if it's too long"""
         # Remove from internal list
         self.current_results = [r for r in self.current_results if r.get("url") != url]
-        # Remove from UI
-        self.window.queue_panel.remove_item_by_url(url)
+        # Keep the queue panel's master list in sync so the removed video
+        # doesn't reappear when the panel is next rebuilt.
+        panel = self.window.queue_panel
+        if panel.master_items:
+            panel.master_items = [i for i in panel.master_items if i.get("url") != url]
+        # Remove from UI (single surgical row removal, no list rebuild)
+        panel.remove_item_by_url(url)
 
     def _restore_last_view(self):
         last_view = get_app_setting("last_view", "playlists")
@@ -888,6 +951,9 @@ class MusicAppController:
         return []
 
     def handle_open_playlist(self, playlist_id):
+        # Any in-flight search is stale now; don't let it replace this view.
+        self._search_generation += 1
+        QApplication.restoreOverrideCursor()
         self.current_playlist_id = playlist_id
         # Clear search inputs when opening a playlist (fresh context)
         self.window.search_panel.clear()

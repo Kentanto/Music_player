@@ -1,3 +1,4 @@
+from PySide6.QtCore import QThread, Signal
 from yt_dlp import YoutubeDL
 import warnings
 from db import get_ffmpeg_location, get_ytdlp_cookie_options
@@ -83,3 +84,22 @@ def search_youtube(query, limit=10, max_duration=600):
             flush=True,
         )
     return results
+
+
+class SearchWorker(QThread):
+    """Runs a YouTube search off the UI thread so the app never freezes,
+    even when yt-dlp / YouTube responds slowly."""
+
+    search_finished = Signal(object)  # results list
+
+    def __init__(self, query, parent=None):
+        super().__init__(parent)
+        self._query = query
+
+    def run(self):
+        try:
+            results = search_youtube(self._query)
+        except Exception as error:
+            print(f"[search] worker failed: {error}", flush=True)
+            results = []
+        self.search_finished.emit(results or [])
