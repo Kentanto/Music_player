@@ -120,7 +120,10 @@ QListWidget:focus {
     border: 1px solid #1ed760;
 }
 
-/* Scrollbars — fat and visible for low-res / mouse-only Raspberry Pi */
+/* Scrollbars — fat and visible for low-res / mouse-only Raspberry Pi.
+   add-line / sub-line MUST stay 0px: any size > 0 creates an invisible
+   hover/click dead-zone inside the handle near the ends of the list,
+   because Qt hit-tests those zones before the handle. */
 QScrollBar:vertical {
     background-color: #121212;
     width: 20px;
@@ -138,16 +141,14 @@ QScrollBar::handle:vertical:hover {
     background-color: #1db954;
 }
 
-QScrollBar::add-line:vertical,
-QScrollBar::sub-line:vertical {
-    height: 16px;
-    subcontrol-position: top;
-    subcontrol-origin: margin;
-    border-radius: 3px;
+QScrollBar::handle:vertical:pressed {
+    background-color: #169c46;
 }
 
-QScrollBar::add-line:vertical {
-    subcontrol-position: bottom;
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    height: 0px;
+    width: 0px;
 }
 
 QScrollBar::add-page:vertical,
@@ -172,16 +173,14 @@ QScrollBar::handle:horizontal:hover {
     background-color: #1db954;
 }
 
-QScrollBar::add-line:horizontal,
-QScrollBar::sub-line:horizontal {
-    width: 16px;
-    subcontrol-position: left;
-    subcontrol-origin: margin;
-    border-radius: 3px;
+QScrollBar::handle:horizontal:pressed {
+    background-color: #169c46;
 }
 
-QScrollBar::add-line:horizontal {
-    subcontrol-position: right;
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal {
+    height: 0px;
+    width: 0px;
 }
 
 QScrollBar::add-page:horizontal,
@@ -230,21 +229,6 @@ QLabel {
 /* Splitter */
 QSplitter::handle {
     background-color: #282828;
-}
-
-/* Scrollbars */
-QScrollBar:vertical {
-    background-color: #121212;
-    width: 12px;
-}
-
-QScrollBar::handle:vertical {
-    background-color: #404040;
-    border-radius: 6px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background-color: #1db954;
 }
 
 /* Fullscreen player */
