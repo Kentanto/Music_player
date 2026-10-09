@@ -68,6 +68,10 @@ class Player:
         # In-flight background stream downloads, kept referenced so the
         # QThreads are never garbage-collected while running
         self._resolve_workers = []
+        # True once playback of an actual track has been initiated.  Before
+        # that, _current_item is only a queue anchor and the UI must not
+        # treat it as "now playing".
+        self._has_media = False
 
         # start at a safe default volume and use a smooth curve for perception
         self.volume = 30
@@ -85,6 +89,9 @@ class Player:
     def play_url(self, url):
         self._play_generation += 1
         generation = self._play_generation
+        # A concrete track is being started — from now on the UI may treat
+        # _current_item as "now playing".
+        self._has_media = True
 
         # If the URL is already a local file path, play it directly.
         if isinstance(url, str) and os.path.exists(url):

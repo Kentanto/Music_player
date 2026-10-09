@@ -425,10 +425,13 @@ class QueuePanel(QWidget):
             if src == self.current_item_source:
                 current_idx = idx
 
+        # Follow the playing track's row when it is visible, but never
+        # auto-select an arbitrary song when nothing is playing — opening
+        # a playlist shouldn't highlight (and preview) some random row.
         if current_idx >= 0:
             self.list_widget.setCurrentRow(current_idx)
-        elif items:
-            self.list_widget.setCurrentRow(0)
+        else:
+            self.list_widget.clearSelection()
 
         if reset_scroll:
             QTimer.singleShot(

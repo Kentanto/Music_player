@@ -289,20 +289,27 @@ class MusicAppController:
         self._update_now_playing()
 
     def handle_track_selected(self, item):
-        """Preview selected track metadata without changing playback."""
+        """Preview selected track metadata without changing playback.
+
+        Only the main-window cover pane previews the selection — the player
+        bar and the fullscreen view stay locked to the track that is
+        actually playing, so browsing/clicking never rewrites "now playing".
+        """
         if not item or item.get("type") == "playlist":
             return
 
         title, artist, artwork = self._track_display_data(item)
         self.window.cover_widget.set_track_info(title, artist)
-        self.window.fullscreen_player.set_track_info(title, artist)
-        self._set_cover_art(artwork)
-        self.window.player_bar.set_track_info(title)
+        self._set_cover_art(artwork, include_fullscreen=False)
     
     def handle_pause(self):
         self.player.pause()
     
     def handle_resume(self):
+        if self.player.get_duration() <= 0 and self._start_queue_if_idle():
+            # Nothing loaded yet (fresh open): start the queue instead of
+            # resuming an empty player.
+            return
         self.player.resume()
     
     def handle_play_pause(self):
@@ -320,6 +327,18 @@ class MusicAppController:
         item = self.window.queue_panel.get_current_item()
         if item:
             self.handle_play_item(item)
+            return
+
+        # No selection (nothing is auto-selected on open anymore): start
+        # from the front of the active queue so Play still works.
+        self._start_queue_if_idle()
+
+    def _start_queue_if_idle(self):
+        """When nothing is loaded, start playing the front of the queue."""
+        if not self.player.queue:
+            return False
+        self.handle_play_item({"type": "track", "url": self.player.queue[0]})
+        return True
 
     def handle_next(self):
         self.player.next()
@@ -444,6 +463,14 @@ class MusicAppController:
         if not item:
             return None
         return item.get("file_path") or item.get("url")
+
+    def _playing_source(self):
+        """Source of the track actually playing (or last played), or None
+        while playback has never been started — the queue's anchor song
+        must not pose as 'now playing' on a freshly opened playlist."""
+        if self.player._has_media:
+            return self.player._current_item
+        return None
 
     def handle_shuffle_toggle(self, enabled):
         queue_urls = self.active_queue_urls or self.player._base_queue
@@ -811,7 +838,9 @@ class MusicAppController:
     def _update_now_playing(self):
         """Update the UI with the currently playing track title and artwork."""
         current_item = self.player._current_item
-        if current_item is None:
+        if current_item is None or not self.player._has_media:
+            # Nothing has actually been played yet — the queue's anchor must
+            # not pose as "now playing".
             self.window.cover_widget.set_track_info("No track selected")
             self.window.cover_widget.clear()
             self.window.player_bar.set_track_info("No track selected")
@@ -873,39 +902,42 @@ class MusicAppController:
 
         return title, artist, artwork
 
-    def _set_cover_art(self, artwork):
+    def _set_cover_art(self, artwork, include_fullscreen=True):
         """Load local artwork immediately; fetch remote art asynchronously so
         the UI thread never blocks on a slow thumbnail download."""
         self._cover_token += 1
         token = self._cover_token
 
         if not artwork:
-            self._apply_cover_art(None, token)
+            self._apply_cover_art(None, token, include_fullscreen)
             return
 
         if isinstance(artwork, str) and Path(artwork).exists():
-            self._apply_cover_art(QPixmap(artwork), token)
+            self._apply_cover_art(QPixmap(artwork), token, include_fullscreen)
             return
 
         cached = ThumbnailLoader.cached_pixmap(artwork)
         if cached is not None:
-            self._apply_cover_art(cached, token)
+            self._apply_cover_art(cached, token, include_fullscreen)
             return
 
         ThumbnailLoader.instance().fetch_async(
-            artwork, lambda pix, t=token: self._apply_cover_art(pix, t)
+            artwork,
+            lambda pix, t=token, fs=include_fullscreen: self._apply_cover_art(pix, t, fs),
         )
 
-    def _apply_cover_art(self, pixmap, token):
+    def _apply_cover_art(self, pixmap, token, include_fullscreen=True):
         """Apply cover art unless a newer selection superseded it meanwhile."""
         if token != self._cover_token:
             return
         if pixmap is None or pixmap.isNull():
             self.window.cover_widget.clear_cover_art()
-            self.window.fullscreen_player.set_cover_art(QPixmap())
+            if include_fullscreen:
+                self.window.fullscreen_player.set_cover_art(QPixmap())
         else:
             self.window.cover_widget.set_cover_art(pixmap)
-            self.window.fullscreen_player.set_cover_art(pixmap)
+            if include_fullscreen:
+                self.window.fullscreen_player.set_cover_art(pixmap)
     
     def _on_video_too_long(self, generation, url):
         """Remove a video from results if it's too long"""
@@ -941,13 +973,13 @@ class MusicAppController:
         track_items = [item for item in self.current_results if item.get("type") != "playlist"]
         if not track_items:
             self.active_queue_urls = []
-            self.window.queue_panel.add_items(self.current_results, preserve_order=False, current_item_source=self.player._current_item)
+            self.window.queue_panel.add_items(self.current_results, preserve_order=False, current_item_source=self._playing_source())
             return
 
         urls = [item.get("file_path") or item.get("url") for item in track_items if item.get("file_path") or item.get("url")]
         if not urls:
             self.active_queue_urls = []
-            self.window.queue_panel.add_items(self.current_results, preserve_order=False, current_item_source=self.player._current_item)
+            self.window.queue_panel.add_items(self.current_results, preserve_order=False, current_item_source=self._playing_source())
             return
 
         current_item = self.player._current_item
@@ -962,7 +994,7 @@ class MusicAppController:
         track_items = [item for item in self.current_results if item.get("type") != "playlist"]
         if not track_items:
             self.window.queue_panel.add_items(
-                self.current_results, preserve_order=False, current_item_source=self.player._current_item
+                self.current_results, preserve_order=False, current_item_source=self._playing_source()
             )
             return
 
@@ -974,7 +1006,7 @@ class MusicAppController:
             self.window.queue_panel.master_items = self.current_results
             self.window.queue_panel.set_playback_order(
                 ordered_sources,
-                current_source=self.player._current_item,
+                current_source=self._playing_source(),
                 queued_next=queued_next,
                 reset_scroll=reset_scroll,
             )
@@ -991,7 +1023,7 @@ class MusicAppController:
                     self.handle_playback_order_changed(visual_urls)
         else:
             self.window.display_results(
-                track_items, preserve_order=True, current_item_source=self.player._current_item
+                track_items, preserve_order=True, current_item_source=self._playing_source()
             )
 
     def handle_playback_order_changed(self, urls):
