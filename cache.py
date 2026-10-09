@@ -4,7 +4,7 @@ import tempfile
 import warnings
 from pathlib import Path
 from yt_dlp import YoutubeDL
-from db import get_cached_stream, cache_stream, resource_path, get_ytdlp_cookie_options
+from db import get_cached_stream, cache_stream, resource_path, get_ytdlp_cookie_options, YTDLP_HTTP_HEADERS
 
 
 def get_ffmpeg_location():
@@ -56,13 +56,8 @@ def resolve_stream(url, max_duration=600):
 
     ydl_opts.update(get_ytdlp_cookie_options())
 
-    # Add common browser headers
-    ydl_opts.setdefault("http_headers", {})
-    ydl_opts["http_headers"].setdefault(
-        "User-Agent",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
-    )
-    ydl_opts["http_headers"].setdefault("Referer", "https://www.youtube.com/")
+    # Send the same browser headers as every other yt-dlp call in the app.
+    ydl_opts.setdefault("http_headers", {}).update(YTDLP_HTTP_HEADERS)
 
     try:
         with YoutubeDL(ydl_opts) as ydl:

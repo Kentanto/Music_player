@@ -32,6 +32,8 @@ class MainWindow(QMainWindow):
     load_playlists = Signal()
     add_to_playlist = Signal()
     import_list_requested = Signal()
+    link_spotify_requested = Signal()
+    view_failures_requested = Signal()
     open_playlist_requested = Signal(object)
     stop_requested = Signal()
     volume_mute = Signal()
@@ -123,6 +125,8 @@ class MainWindow(QMainWindow):
         self.fullscreen_player.seek_requested.connect(self.seek_requested.emit)
         self.sidebar.add_to_playlist_clicked.connect(self.add_to_playlist.emit)
         self.sidebar.import_list_clicked.connect(self.import_list_requested.emit)
+        self.sidebar.link_spotify_clicked.connect(self.link_spotify_requested.emit)
+        self.sidebar.view_failures_clicked.connect(self.view_failures_requested.emit)
         self.sidebar.playlists_clicked.connect(self.load_playlists.emit)
 
         fullscreen_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
@@ -299,6 +303,8 @@ class MainWindow(QMainWindow):
             self.sidebar.playlists_btn,
             self.sidebar.add_to_playlist_btn,
             self.sidebar.import_list_btn,
+            self.sidebar.link_spotify_btn,
+            self.sidebar.view_failures_btn,
             self.cover_widget,
             self.queue_panel.filter_input,
             self.queue_panel.sort_combo,

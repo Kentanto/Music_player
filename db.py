@@ -18,16 +18,52 @@ def resource_path(relative_path):
     return BASE_DIR / relative_path
 
 
+class BotBlockedError(RuntimeError):
+    """YouTube answered with its 'confirm you're not a bot' sign-in wall."""
+
+
+# Browser-like headers shared by every yt-dlp call in the app (the streaming
+# cache already used these; now searches and downloads do too) so requests
+# look like a normal browser visit instead of bot traffic.
+YTDLP_HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36",
+    "Referer": "https://www.youtube.com/",
+}
+
+
+def _is_bot_block_error(reason):
+    """True when an yt-dlp error is YouTube's 'confirm you're not a bot' wall."""
+    text = str(reason).lower()
+    return (
+        "not a bot" in text
+        or "sign in to confirm" in text
+        or "cookies for the authentication" in text
+    )
+
+
 def get_ytdlp_cookie_options():
-    """Return yt-dlp cookie options from YTDLP_BROWSER / YTDLP_COOKIEFILE env vars."""
+    """yt-dlp cookie options from env vars, falling back to the saved choice.
+
+    YTDLP_BROWSER / YTDLP_COOKIEFILE environment variables win; otherwise the
+    browser saved in the app settings is used, so normal launches also send
+    cookies and don't trip YouTube's bot wall.
+    """
     opts = {}
-    browser = os.environ.get("YTDLP_BROWSER")
+    browser = os.environ.get("YTDLP_BROWSER") or get_app_setting("ytdlp_browser")
     if browser:
         opts["cookiesfrombrowser"] = (browser,)
-    cookiefile = os.environ.get("YTDLP_COOKIEFILE")
+    cookiefile = os.environ.get("YTDLP_COOKIEFILE") or get_app_setting("ytdlp_cookiefile")
     if cookiefile and Path(cookiefile).exists():
         opts["cookiefile"] = str(Path(cookiefile).resolve())
     return opts
+
+
+def set_ytdlp_cookie_config(browser=None, cookiefile=None):
+    """Persist the cookie source so every future launch uses it automatically."""
+    if browser:
+        set_app_setting("ytdlp_browser", browser)
+    if cookiefile:
+        set_app_setting("ytdlp_cookiefile", cookiefile)
 
 
 def data_path(relative_path):
@@ -160,6 +196,33 @@ def init_db():
             c.execute("UPDATE playlist_songs SET added_at = ? WHERE id = ?", (added_at, row_id))
 
     c.execute("""
+    CREATE TABLE IF NOT EXISTS spotify_links (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        spotify_playlist_id TEXT,
+        spotify_url TEXT,
+        program_playlist_id INTEGER,
+        linked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        last_checked_at TEXT,
+        UNIQUE (spotify_playlist_id, program_playlist_id),
+        FOREIGN KEY (program_playlist_id) REFERENCES playlists(id)
+    )
+    """)
+
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS spotify_seen_tracks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        program_playlist_id INTEGER,
+        track_id TEXT,
+        title TEXT,
+        artist TEXT,
+        status TEXT DEFAULT 'seen',
+        first_seen_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (program_playlist_id, track_id),
+        FOREIGN KEY (program_playlist_id) REFERENCES playlists(id)
+    )
+    """)
+
+    c.execute("""
     CREATE TABLE IF NOT EXISTS app_settings (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -283,6 +346,137 @@ def get_playlist_by_id(playlist_id):
         conn.close()
 
 
+def add_spotify_link(spotify_playlist_id, spotify_url, program_playlist_id):
+    """Remember that a Spotify playlist feeds songs into a program playlist.
+
+    The same Spotify list may feed several program playlists, and one program
+    playlist may be fed by several Spotify lists; only the exact pair is
+    stored once. Returns (id, spotify_playlist_id, spotify_url, program_playlist_id).
+    """
+    conn = sqlite3.connect(DB)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "INSERT OR IGNORE INTO spotify_links (spotify_playlist_id, spotify_url, program_playlist_id) "
+            "VALUES (?, ?, ?)",
+            (spotify_playlist_id, spotify_url, program_playlist_id),
+        )
+        conn.commit()
+        c.execute(
+            "SELECT id, spotify_playlist_id, spotify_url, program_playlist_id FROM spotify_links "
+            "WHERE spotify_playlist_id=? AND program_playlist_id=?",
+            (spotify_playlist_id, program_playlist_id),
+        )
+        return c.fetchone()
+    finally:
+        conn.close()
+
+
+def get_spotify_links():
+    """Return every Spotify link as (id, spotify_playlist_id, spotify_url, program_playlist_id, playlist_name)."""
+    with sqlite3.connect(DB) as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT sl.id, sl.spotify_playlist_id, sl.spotify_url, sl.program_playlist_id, p.name "
+            "FROM spotify_links sl JOIN playlists p ON sl.program_playlist_id = p.id "
+            "ORDER BY sl.id"
+        )
+        return c.fetchall()
+
+
+def set_spotify_link_checked(link_id):
+    """Stamp a link with the time its Spotify list was last checked."""
+    with sqlite3.connect(DB) as conn:
+        conn.execute(
+            "UPDATE spotify_links SET last_checked_at=CURRENT_TIMESTAMP WHERE id=?",
+            (link_id,),
+        )
+        conn.commit()
+
+
+def mark_spotify_tracks_seen(program_playlist_id, identities, status="seen"):
+    """Remember Spotify track IDs for a program playlist without downloading.
+
+    identities: iterable of (track_id, title, artist). Rows that already exist
+    keep their status, so a track already downloaded or failed is never reset.
+    status is 'seen' for a baseline snapshot (never downloaded) or 'pending'
+    for tracks queued for a download attempt.
+    Returns how many new rows were added.
+    """
+    rows = [
+        (program_playlist_id, track_id, title, artist, status)
+        for track_id, title, artist in identities
+        if track_id
+    ]
+    if not rows:
+        return 0
+    conn = sqlite3.connect(DB)
+    try:
+        c = conn.cursor()
+        before = c.execute(
+            "SELECT COUNT(*) FROM spotify_seen_tracks WHERE program_playlist_id=?",
+            (program_playlist_id,),
+        ).fetchone()[0]
+        c.executemany(
+            "INSERT OR IGNORE INTO spotify_seen_tracks (program_playlist_id, track_id, title, artist, status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        conn.commit()
+        after = c.execute(
+            "SELECT COUNT(*) FROM spotify_seen_tracks WHERE program_playlist_id=?",
+            (program_playlist_id,),
+        ).fetchone()[0]
+        return after - before
+    finally:
+        conn.close()
+
+
+def get_spotify_track_statuses(program_playlist_id):
+    """Return {track_id: status} for every known Spotify track of a program playlist."""
+    with sqlite3.connect(DB) as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT track_id, status FROM spotify_seen_tracks WHERE program_playlist_id=?",
+            (program_playlist_id,),
+        )
+        return dict(c.fetchall())
+
+
+def get_spotify_seen_track_ids(program_playlist_id):
+    """Return the set of Spotify track IDs already known for a program playlist."""
+    with sqlite3.connect(DB) as conn:
+        c = conn.cursor()
+        c.execute(
+            "SELECT track_id FROM spotify_seen_tracks WHERE program_playlist_id=?",
+            (program_playlist_id,),
+        )
+        return {row[0] for row in c.fetchall()}
+
+
+def set_spotify_track_status(program_playlist_id, track_id, status, title=None, artist=None):
+    """Record the permanent outcome for one Spotify track: 'downloaded' or 'failed'.
+
+    A track that downloaded or failed once is never attempted again. The row
+    is created (as 'seen') if it does not exist yet.
+    """
+    conn = sqlite3.connect(DB)
+    try:
+        c = conn.cursor()
+        c.execute(
+            "INSERT INTO spotify_seen_tracks (program_playlist_id, track_id, title, artist, status) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(program_playlist_id, track_id) DO UPDATE SET "
+            "status=excluded.status, "
+            "title=COALESCE(excluded.title, spotify_seen_tracks.title), "
+            "artist=COALESCE(excluded.artist, spotify_seen_tracks.artist)",
+            (program_playlist_id, track_id, title, artist, status),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def rename_playlist(playlist_id, new_name):
     """Rename a playlist folder and keep its database paths in sync."""
     new_name = str(new_name).strip()
@@ -392,6 +586,8 @@ def delete_playlist(playlist_id, use_trash=True):
         )]
         conn.execute("DELETE FROM playlist_songs WHERE playlist_id=?", (playlist_id,))
         conn.execute("DELETE FROM playlists WHERE id=?", (playlist_id,))
+        conn.execute("DELETE FROM spotify_links WHERE program_playlist_id=?", (playlist_id,))
+        conn.execute("DELETE FROM spotify_seen_tracks WHERE program_playlist_id=?", (playlist_id,))
         for song_id in song_ids:
             conn.execute(
                 "DELETE FROM songs WHERE id=? AND NOT EXISTS "
@@ -689,6 +885,7 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
     }
 
     ydl_opts.update(get_ytdlp_cookie_options())
+    ydl_opts.setdefault("http_headers", {}).update(YTDLP_HTTP_HEADERS)
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -724,6 +921,10 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
                         update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                     return alt_path
     except Exception as error:
+        # A bot-wall block is a cookie problem, not a broken song: surface it
+        # so callers can treat it differently from an ordinary failure.
+        if _is_bot_block_error(error):
+            raise BotBlockedError(str(error))
         print(f"[audio-download] exception: {type(error).__name__}: {error}", flush=True)
         traceback.print_exc()
         return None

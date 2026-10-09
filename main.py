@@ -1,7 +1,10 @@
 import sys
 import warnings
 from pathlib import Path
-from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QInputDialog, QMessageBox, QPushButton,
+    QTextEdit, QVBoxLayout,
+)
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt, QThread, Signal
 
@@ -25,9 +28,13 @@ from db import (
     thumbnail_path_for_audio,
     get_track_metadata,
     get_all_playlist_songs_flat,
+    get_playlist_by_id,
+    get_spotify_links,
+    get_ytdlp_cookie_options,
+    set_ytdlp_cookie_config,
 )
 from metadata_fetcher import MetadataFetcher
-from spotify_download import SpotifyImportWorker
+from spotify_download import SpotifyImportWorker, SpotifyLinkWorker, SpotifySyncWorker
 from cec_remote import CecRemoteListener
 from mocute_listener import MocuteListener
 
@@ -83,6 +90,8 @@ class MusicAppController:
         self._retired_search_workers = []  # Retired search workers, same
         self._cover_token = 0  # Drops superseded cover-art loads
         self.spotify_import_worker = None
+        self.spotify_link_worker = None
+        self.spotify_sync_worker = None
         self.add_song_worker = None
         self.cec_remote = None
         self.gamepad = None
@@ -167,6 +176,8 @@ class MusicAppController:
         self.window.load_playlists.connect(self.handle_load_playlists)
         self.window.add_to_playlist.connect(self.handle_add_to_playlist)
         self.window.import_list_requested.connect(self.handle_import_list)
+        self.window.link_spotify_requested.connect(self.handle_link_spotify)
+        self.window.view_failures_requested.connect(self.handle_view_failures)
         self.window.open_playlist_requested.connect(self.handle_open_playlist)
         self.window.volume_changed.connect(self.handle_volume_change)
         self.window.seek_requested.connect(self.handle_seek)
@@ -603,6 +614,251 @@ class MusicAppController:
     def _on_import_failed(self, reason):
         QMessageBox.warning(self.window, "Import List", f"Import failed: {reason}")
 
+    def handle_link_spotify(self):
+        """Connect a Spotify playlist to a program playlist and watch it at startup."""
+        if self.spotify_link_worker and self.spotify_link_worker.isRunning():
+            return
+
+        playlist_url, ok = QInputDialog.getText(
+            self.window,
+            "Link Spotify",
+            "Spotify playlist URL to watch for new songs:",
+            text="https://open.spotify.com/playlist/",
+        )
+        playlist_url = playlist_url.strip()
+        if not ok or not playlist_url:
+            return
+        if "spotify.com/playlist/" not in playlist_url:
+            QMessageBox.warning(
+                self.window,
+                "Link Spotify",
+                "Please enter a valid Spotify playlist URL.",
+            )
+            return
+
+        # Ask which program playlist should receive the new songs.
+        program_playlist_id = None
+        choice_box = QMessageBox(self.window)
+        choice_box.setWindowTitle("Link Destination")
+        choice_box.setText("Which playlist should receive the new songs?")
+        new_btn = choice_box.addButton("New Playlist", QMessageBox.AcceptRole)
+        existing_btn = choice_box.addButton("Existing Playlist", QMessageBox.ActionRole)
+        choice_box.addButton("Cancel", QMessageBox.RejectRole)
+        choice_box.exec()
+        clicked = choice_box.clickedButton()
+
+        if clicked == existing_btn:
+            playlists = get_playlists()
+            if not playlists:
+                QMessageBox.information(
+                    self.window, "Link Spotify", "No existing playlists found. Use \"New Playlist\" instead."
+                )
+                return
+            names = [p[1] for p in playlists]
+            name, ok = QInputDialog.getItem(
+                self.window, "Select Playlist", "Watch songs into:", names, 0, False
+            )
+            if not ok:
+                return
+            for p in playlists:
+                if p[1] == name:
+                    program_playlist_id = p[0]
+                    break
+        elif clicked == new_btn:
+            name, ok = QInputDialog.getText(self.window, "Link Spotify", "Name for the new playlist:")
+            name = name.strip()
+            if not ok or not name:
+                return
+            row = create_playlist(name)
+            if not row:
+                QMessageBox.warning(
+                    self.window, "Link Spotify", "Could not create the playlist (the name may already exist)."
+                )
+                return
+            program_playlist_id = row[0]
+        else:
+            return  # user cancelled
+
+        if program_playlist_id is None:
+            return
+
+        # The same Spotify list can feed many program playlists, but linking
+        # the exact same pair twice would only duplicate the check.
+        spotify_id = playlist_url.split("playlist/", 1)[1].split("?", 1)[0]
+        for link in get_spotify_links():
+            if link[1] == spotify_id and link[3] == program_playlist_id:
+                QMessageBox.information(
+                    self.window, "Link Spotify", "That Spotify playlist is already linked to this playlist."
+                )
+                return
+
+        self.spotify_link_worker = SpotifyLinkWorker(playlist_url, program_playlist_id, self.window)
+        self.spotify_link_worker.linked.connect(self._on_link_completed)
+        self.spotify_link_worker.failed.connect(self._on_link_failed)
+        self.window.sidebar.link_spotify_btn.setEnabled(False)
+        self.spotify_link_worker.finished.connect(
+            lambda: self.window.sidebar.link_spotify_btn.setEnabled(True)
+        )
+        self.spotify_link_worker.start()
+
+    def _on_link_completed(self, program_playlist_id, spotify_name, snapshot_count):
+        playlist_name = ""
+        row = get_playlist_by_id(program_playlist_id)
+        if row:
+            playlist_name = row[1]
+        QMessageBox.information(
+            self.window,
+            "Link Spotify",
+            f'Linked Spotify list "{spotify_name}" to "{playlist_name}".\n\n'
+            f"{snapshot_count} song(s) currently in the Spotify list were marked as known, "
+            "so nothing was downloaded.\n"
+            "Songs added to the Spotify list from now on are downloaded the next time "
+            "the app starts.",
+        )
+
+    def _on_link_failed(self, reason):
+        QMessageBox.warning(self.window, "Link Spotify", f"Link failed: {reason}")
+
+    def start_spotify_sync(self):
+        """Check every linked Spotify playlist once, right after startup."""
+        if self.spotify_sync_worker and self.spotify_sync_worker.isRunning():
+            return
+        if not get_spotify_links():
+            return
+        self.spotify_sync_worker = SpotifySyncWorker(self.window)
+        self.spotify_sync_worker.progress.connect(
+            lambda current, total, title: print(f"[spotify-sync] [{current}/{total}] {title}", flush=True)
+        )
+        self.spotify_sync_worker.completed.connect(self._on_spotify_sync_completed)
+        self.spotify_sync_worker.failed.connect(self._on_spotify_sync_failed)
+        self.spotify_sync_worker.start()
+
+    def _on_spotify_sync_completed(self, results):
+        """Summarize the startup sync and refresh views that gained songs."""
+        lines = []
+        touched_ids = []
+        blocked_total = 0
+        for program_playlist_id, playlist_name, added, failed, blocked, _log in results:
+            if not added and not failed and not blocked:
+                continue
+            touched_ids.append(program_playlist_id)
+            line = f'"{playlist_name}": {added} new song(s) added'
+            if failed:
+                line += f", {failed} failed (see the Failed Songs button)"
+            if blocked:
+                blocked_total += blocked
+                line += f", {blocked} blocked by YouTube's bot check (retried next start)"
+            lines.append(line)
+        if not lines:
+            return  # nothing new anywhere; stay quiet
+
+        if self.current_playlist_id is None:
+            self.handle_load_playlists()
+        elif self.current_playlist_id == "all":
+            self.handle_open_playlist("all")
+        elif self.current_playlist_id in touched_ids:
+            self.handle_open_playlist(self.current_playlist_id)
+
+        QMessageBox.information(
+            self.window,
+            "Spotify Sync",
+            "Spotify sync finished.\n" + "\n".join(lines),
+        )
+
+        if blocked_total and not get_ytdlp_cookie_options():
+            self._offer_cookie_setup(blocked_total)
+
+    def _offer_cookie_setup(self, blocked_total):
+        """After a bot-blocked sync, offer to remember a browser for cookies.
+
+        YouTube's 'confirm you're not a bot' wall goes away once yt-dlp sends
+        real browser cookies, so let the user pick their browser once; the
+        choice is saved and used by every download from then on.
+        """
+        box = QMessageBox(self.window)
+        box.setWindowTitle("YouTube Bot Check")
+        box.setIcon(QMessageBox.Warning)
+        box.setText(
+            f"YouTube blocked {blocked_total} song(s) with its 'confirm you're not a bot' "
+            "sign-in wall.\n\n"
+            "Pick the browser you are logged into YouTube with so the player can borrow its "
+            "cookies.\nThis is saved once and used for every download from now on.\n"
+            "The blocked songs are retried the next time the app starts."
+        )
+        browsers = [
+            ("Firefox", "firefox"),
+            ("Chrome", "chrome"),
+            ("Edge", "edge"),
+            ("Brave", "brave"),
+            ("Chromium", "chromium"),
+        ]
+        choices = [
+            (box.addButton(label, QMessageBox.AcceptRole), value)
+            for label, value in browsers
+        ]
+        skip_btn = box.addButton("Skip", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is skip_btn:
+            return
+        for button, value in choices:
+            if button is clicked:
+                set_ytdlp_cookie_config(browser=value)
+                print(f"[spotify-sync] cookie source saved: {value}", flush=True)
+                break
+
+    def _on_spotify_sync_failed(self, reason):
+        QMessageBox.warning(self.window, "Spotify Sync", f"Startup sync failed: {reason}")
+
+    def handle_view_failures(self):
+        """Show the failed_songs.txt error log for a playlist."""
+        playlists = get_playlists()
+        if not playlists:
+            QMessageBox.information(self.window, "Failed Songs", "No playlists exist yet.")
+            return
+
+        # Prefer the playlist the user is looking at, otherwise ask.
+        target_id = self.current_playlist_id
+        if target_id is None or target_id == "all" or not any(p[0] == target_id for p in playlists):
+            names = [p[1] for p in playlists]
+            name, ok = QInputDialog.getItem(
+                self.window, "Failed Songs", "Show the error log for:", names, 0, False
+            )
+            if not ok:
+                return
+            target_id = next((p[0] for p in playlists if p[1] == name), None)
+        if target_id is None:
+            return
+
+        row = get_playlist_by_id(target_id)
+        if not row:
+            return
+        _, name, folder = row
+        log_path = Path(folder) / "failed_songs.txt"
+        text = ""
+        if log_path.exists():
+            text = log_path.read_text(encoding="utf-8", errors="replace").strip()
+        if not text:
+            QMessageBox.information(self.window, "Failed Songs", f'No failed songs recorded for "{name}".')
+            return
+
+        # Keep the dialog manageable: show the most recent entries.
+        lines = text.splitlines()
+        shown = lines[-200:]
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle(f"Failed Songs — {name}")
+        dialog.resize(680, 480)
+        layout = QVBoxLayout(dialog)
+        editor = QTextEdit(dialog)
+        editor.setReadOnly(True)
+        editor.setPlainText("\n".join(shown))
+        layout.addWidget(editor)
+        if len(shown) < len(lines):
+            editor.append(f"\n(showing the last {len(shown)} of {len(lines)} entries — full log: {log_path})")
+        close_btn = QPushButton("Close", dialog)
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        dialog.exec()
 
     def handle_add_to_playlist(self, item=None):
         """Add selected song to an existing or new playlist."""
@@ -780,6 +1036,11 @@ class MusicAppController:
             # import can never keep the app from closing.
             self.spotify_import_worker.requestInterruption()
             self.spotify_import_worker.wait(3000)
+        if self.spotify_link_worker and self.spotify_link_worker.isRunning():
+            self.spotify_link_worker.wait(3000)
+        if self.spotify_sync_worker and self.spotify_sync_worker.isRunning():
+            self.spotify_sync_worker.requestInterruption()
+            self.spotify_sync_worker.wait(3000)
         if self.cec_remote and self.cec_remote.isRunning():
             self.cec_remote.stop()
         if self.gamepad:
@@ -1279,6 +1540,9 @@ if __name__ == "__main__":
         print(f"Warning: styles.qss not found at {qss_path}")
     
     window.show()
+
+    # Check linked Spotify playlists once for songs added since the last run.
+    controller.start_spotify_sync()
 
     app.aboutToQuit.connect(controller.shutdown)
 

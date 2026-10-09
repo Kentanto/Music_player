@@ -15,10 +15,19 @@ from yt_dlp import YoutubeDL
 
 from db import (
     FFMPEG_LOCATION,
+    YTDLP_HTTP_HEADERS,
+    BotBlockedError,
+    _is_bot_block_error,
     add_downloaded_song_to_playlist,
+    add_spotify_link,
     create_playlist,
     download_audio_to_folder,
     get_playlist_by_id,
+    get_spotify_links,
+    get_spotify_track_statuses,
+    mark_spotify_tracks_seen,
+    set_spotify_link_checked,
+    set_spotify_track_status,
 )
 
 # These values are portable across operating systems. Keep them in this small
@@ -100,25 +109,40 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
     a clean "track + artist" query, so we trust it and simply walk down the
     results, taking the first one that passes a few tiny filters (no live
     streams, sane length, no karaoke/altered versions) and is downloadable.
+
+    Returns (candidate, blocked_count). blocked_count counts results refused
+    by YouTube's 'confirm you're not a bot' wall — when every result was
+    blocked the caller should treat it as a cookie problem, not as
+    "song not found".
     """
 
     from db import get_ytdlp_cookie_options
     cookie_opt = get_ytdlp_cookie_options()
+    # Same "look like a normal browser" setup the streaming cache uses, so
+    # the requests are not flagged as bot traffic.
+    shared_opts = {
+        "http_headers": dict(YTDLP_HTTP_HEADERS),
+        **cookie_opt,
+    }
     flat_opts = {
         "quiet": True,
         "no_warnings": True,
         "extract_flat": "in_playlist",
         "noplaylist": True,
         "ignoreerrors": True,
-        **cookie_opt,
+        **shared_opts,
     }
     full_opts = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
-        "ignoreerrors": True,
+        # Raise instead of silently returning None so a bot-wall block can
+        # be told apart from an ordinary unusable video.
+        "ignoreerrors": False,
+        "retries": 3,
+        "js_runtimes": {"node": {}},
         **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
-        **cookie_opt,
+        **shared_opts,
     }
 
     safe_track = track_name.replace('"', '')
@@ -131,6 +155,7 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
     # ---- Walk YouTube's results in order and take the first good one ----
     t0 = time.time()
     seen_ids = set()
+    blocked = 0
     for query in queries:
         try:
             with YoutubeDL(flat_opts) as ydl:
@@ -157,7 +182,9 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
             try:
                 with YoutubeDL(full_opts) as ydl:
                     full = ydl.extract_info(url, download=False)
-            except Exception:
+            except Exception as error:
+                if _is_bot_block_error(error):
+                    blocked += 1
                 continue
             if not full or full.get("is_live"):
                 continue
@@ -181,10 +208,12 @@ def get_best_youtube_result(track_name, artist_name, expected_seconds=None):
                 "thumbnail": full.get("thumbnail"),
                 "uploader": uploader,
                 "view_count": full.get("view_count"),
-            }
+            }, blocked
 
     print(f"[search] '{track_name}' done in {(time.time()-t0):.2f}s → no usable result", flush=True)
-    return None
+    if blocked:
+        print(f"[search] {blocked} result(s) were blocked by YouTube's bot check", flush=True)
+    return None, blocked
 
 
 def _tracks(client, playlist_url):
@@ -194,6 +223,42 @@ def _tracks(client, playlist_url):
         results = client.next(results)
         tracks.extend(results.get("items") or [])
     return tracks
+
+
+def _track_identity(track):
+    """Return (track_id, name, artist) for a Spotify track object."""
+    name = (track.get("name") or "Unknown track").strip()
+    artists = track.get("artists") or []
+    artist = (artists[0].get("name") if artists else None) or "Unknown artist"
+    return track.get("id"), name, artist.strip()
+
+
+def _download_track_to_playlist(track, playlist_id, folder):
+    """Pick a YouTube result for a Spotify track, download and register it.
+
+    Raises on failure. Shared by the importer and the linked-playlist sync so
+    both use the exact same download path. The clean track name is used as
+    the download title so the DB title stays separate from the artist field.
+    """
+    _, name, artist = _track_identity(track)
+    duration_ms = track.get("duration_ms")
+    expected_seconds = duration_ms / 1000.0 if duration_ms else None
+
+    candidate, blocked_count = get_best_youtube_result(name, artist, expected_seconds)
+    if not candidate:
+        if blocked_count:
+            raise BotBlockedError("YouTube's sign-in bot check refused every result")
+        raise RuntimeError("No short YouTube match found")
+    file_path = download_audio_to_folder(candidate["url"], name, folder, use_yt_thumbnail=False, skip_metadata_update=True)
+    if not file_path:
+        raise RuntimeError("Audio download failed")
+    images = track.get("album", {}).get("images") or []
+    thumbnail = images[0].get("url") if images else candidate.get("thumbnail")
+    yt_artist = candidate.get("uploader") or artist
+    add_downloaded_song_to_playlist(
+        name, candidate["url"], playlist_id, file_path, yt_artist, thumbnail
+    )
+    return name, artist
 
 
 def import_playlist(playlist_url, target_playlist_id=None, progress=None, should_stop=None):
@@ -236,33 +301,16 @@ def import_playlist(playlist_url, target_playlist_id=None, progress=None, should
 
     def _process_one(item):
         track = item.get("track") or {}
-        name = (track.get("name") or "Unknown track").strip()
-        artists = track.get("artists") or []
-        artist = (artists[0].get("name") if artists else None) or "Unknown artist"
-        artist = artist.strip()
-        # Use the clean track name as the download title so the DB title stays
-        # separate from the artist field.
-        duration_ms = track.get("duration_ms")
-        expected_seconds = duration_ms / 1000.0 if duration_ms else None
+        _, name, artist = _track_identity(track)
+        label = f"{name} - {artist}"
 
         try:
-            candidate = get_best_youtube_result(name, artist, expected_seconds)
-            if not candidate:
-                raise RuntimeError("No short YouTube match found")
-            file_path = download_audio_to_folder(candidate["url"], name, folder, use_yt_thumbnail=False, skip_metadata_update=True)
-            if not file_path:
-                raise RuntimeError("Audio download failed")
-            images = track.get("album", {}).get("images") or []
-            thumbnail = images[0].get("url") if images else candidate.get("thumbnail")
-            yt_artist = candidate.get("uploader") or artist
-            add_downloaded_song_to_playlist(
-                name, candidate["url"], playlist_id, file_path, yt_artist, thumbnail
-            )
-            _progress_step(f"{name} - {artist}")
+            _download_track_to_playlist(track, playlist_id, folder)
+            _progress_step(label)
             return None
         except Exception as error:
-            _progress_step(f"{name} - {artist}")
-            return f"{name} - {artist}", str(error)
+            _progress_step(label)
+            return label, str(error)
 
     for i in range(0, len(tracks), NUM_WORKERS):
         if should_stop and should_stop():
@@ -279,6 +327,130 @@ def import_playlist(playlist_url, target_playlist_id=None, progress=None, should
         time.sleep(BATCH_DELAY)
 
     return playlist_id, failures, playlist_name, str(failure_log)
+
+
+def link_playlist(playlist_url, program_playlist_id):
+    """Connect a Spotify playlist to a program playlist and snapshot it.
+
+    Nothing is downloaded here: the tracks currently in the Spotify playlist
+    are only remembered, so the startup sync downloads just the songs added
+    to Spotify AFTER this link was made. This keeps a big existing program
+    playlist from being re-downloaded wholesale.
+
+    Returns (program_playlist_id, spotify_name, snapshot_count).
+    """
+    spotify_id = _playlist_id(playlist_url)
+    client = _spotify_client()
+    spotify_meta = client.playlist(spotify_id, fields="name")
+    spotify_name = spotify_meta.get("name") or PLAYLIST_NAME
+
+    playlist_row = get_playlist_by_id(program_playlist_id)
+    if not playlist_row:
+        raise RuntimeError(f"Playlist id={program_playlist_id} does not exist")
+
+    tracks = _tracks(client, spotify_id)
+    identities = [_track_identity(item.get("track") or {}) for item in tracks]
+    mark_spotify_tracks_seen(program_playlist_id, identities)
+    add_spotify_link(spotify_id, playlist_url, program_playlist_id)
+    return program_playlist_id, spotify_name, len(identities)
+
+
+def sync_linked_playlists(progress=None, should_stop=None):
+    """Check every linked Spotify playlist and download only brand-new tracks.
+
+    Meant to run once at app startup. Per link it fetches the current Spotify
+    tracks and downloads only IDs never seen for that program playlist — the
+    seen table is keyed per program playlist, so two Spotify lists feeding
+    one program playlist never double-download the same song.
+
+    Every attempt is final: a track that downloaded or failed once is never
+    tried again, even if its local file is later deleted. One broken link
+    (deleted playlist, network error) does not stop the other links, and one
+    failed song does not stop the rest.
+
+    Returns one summary per link:
+    (program_playlist_id, playlist_name, added, failed, blocked, failure_log_path)
+
+    A bot-blocked track is NOT a failure: it stays 'pending' and is retried
+    on the next startup (usually fixed by setting up cookies once).
+    """
+    links = get_spotify_links()
+    if not links:
+        return []
+
+    client = _spotify_client()
+    results = []
+    for link_id, spotify_id, _spotify_url, program_playlist_id, playlist_name in links:
+        playlist_row = get_playlist_by_id(program_playlist_id)
+        if not playlist_row:
+            print(f"[spotify-sync] skipping link {link_id}: program playlist is gone", flush=True)
+            continue
+        _, name, folder = playlist_row
+        added = 0
+        failed = 0
+        blocked = 0
+
+        try:
+            tracks = _tracks(client, spotify_id)
+        except Exception as error:
+            print(f"[spotify-sync] could not read Spotify list for '{name}': {error}", flush=True)
+            _log_failure(folder, f"Spotify link check for '{name}'", str(error))
+            set_spotify_link_checked(link_id)
+            results.append((program_playlist_id, name, added, failed + 1, blocked, str(_failure_log_path(folder))))
+            continue
+
+        statuses = get_spotify_track_statuses(program_playlist_id)
+
+        def track_id_of(item):
+            return (item.get("track") or {}).get("id")
+
+        # Brand-new tracks, plus any left 'pending' by an earlier bot-blocked
+        # run so they get their retry now.
+        to_try = [
+            item for item in tracks
+            if track_id_of(item) and (
+                track_id_of(item) not in statuses
+                or statuses[track_id_of(item)] == "pending"
+            )
+        ]
+
+        # Mark them 'pending' BEFORE downloading: a crash or a YouTube bot
+        # block leaves them retryable on the next startup, while a finished
+        # attempt (downloaded/failed) is permanent either way.
+        mark_spotify_tracks_seen(
+            program_playlist_id,
+            [_track_identity(item["track"]) for item in to_try],
+            status="pending",
+        )
+
+        total = len(to_try)
+        for index, item in enumerate(to_try, start=1):
+            if should_stop and should_stop():
+                print("[spotify-sync] stop requested; finishing sync early", flush=True)
+                break
+            track = item["track"]
+            track_id, track_name, artist = _track_identity(track)
+            label = f"{track_name} - {artist}"
+            if progress:
+                progress(index, total, label)
+            try:
+                _download_track_to_playlist(track, program_playlist_id, folder)
+                set_spotify_track_status(program_playlist_id, track_id, "downloaded", track_name, artist)
+                added += 1
+            except BotBlockedError as error:
+                # Not a real attempt — leave the track 'pending' so the next
+                # startup retries it once cookies are set up.
+                _log_failure(folder, label, f"Blocked by YouTube's bot check, will retry next start ({error})")
+                blocked += 1
+            except Exception as error:
+                set_spotify_track_status(program_playlist_id, track_id, "failed", track_name, artist)
+                _log_failure(folder, label, str(error))
+                failed += 1
+            time.sleep(BATCH_DELAY)
+
+        set_spotify_link_checked(link_id)
+        results.append((program_playlist_id, name, added, failed, blocked, str(_failure_log_path(folder))))
+    return results
 
 
 def _failure_log_path(folder):
@@ -312,5 +484,44 @@ class SpotifyImportWorker(QThread):
                 should_stop=self.isInterruptionRequested,
             )
             self.completed.emit(playlist_id, len(failures), playlist_name, failure_log)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class SpotifyLinkWorker(QThread):
+    """Links a Spotify playlist to a program playlist off the UI thread."""
+
+    linked = Signal(int, str, int)  # program_playlist_id, spotify name, snapshot size
+    failed = Signal(str)
+
+    def __init__(self, playlist_url, program_playlist_id, parent=None):
+        super().__init__(parent)
+        self.playlist_url = playlist_url
+        self.program_playlist_id = program_playlist_id
+
+    def run(self):
+        try:
+            program_playlist_id, spotify_name, snapshot_count = link_playlist(
+                self.playlist_url, self.program_playlist_id
+            )
+            self.linked.emit(program_playlist_id, spotify_name, snapshot_count)
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
+class SpotifySyncWorker(QThread):
+    """Runs the startup check for every linked Spotify playlist."""
+
+    progress = Signal(int, int, str)
+    completed = Signal(object)  # [(program_playlist_id, name, added, failed, blocked, failure_log)]
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            results = sync_linked_playlists(
+                progress=lambda current, total, title: self.progress.emit(current, total, title),
+                should_stop=self.isInterruptionRequested,
+            )
+            self.completed.emit(results)
         except Exception as error:
             self.failed.emit(str(error))
