@@ -3,7 +3,7 @@ try:
     from PySide6.QtMultimedia import QAudioBufferOutput
 except ImportError:
     QAudioBufferOutput = None
-from PySide6.QtCore import QUrl, QTimer, Signal, QObject
+from PySide6.QtCore import QUrl, QTimer, Signal, QObject, QThread
 import os
 import random
 
@@ -18,6 +18,22 @@ class PlayerSignals(QObject):
     track_ended = Signal()  # Emitted when track finishes naturally
     autoplay_next = Signal()  # Signal to controller to play next
     audio_buffer_received = Signal(object)
+
+
+class StreamResolveWorker(QThread):
+    """Downloads a remote stream off the UI thread so playing a YouTube URL
+    never freezes the app (same pattern as SearchWorker / MetadataFetcher)."""
+
+    resolved = Signal(int, str, object)  # generation, original url, stream path/URL
+
+    def __init__(self, url, generation, parent=None):
+        super().__init__(parent)
+        self._url = url
+        self._generation = generation
+
+    def run(self):
+        stream = resolve_stream(self._url)
+        self.resolved.emit(self._generation, self._url, stream)
 
 
 class Player:
@@ -49,6 +65,9 @@ class Player:
         self._play_generation = 0
         # Sources manually queued to play after the current track
         self._next_sources = []
+        # In-flight background stream downloads, kept referenced so the
+        # QThreads are never garbage-collected while running
+        self._resolve_workers = []
 
         # start at a safe default volume and use a smooth curve for perception
         self.volume = 30
@@ -65,15 +84,33 @@ class Player:
     # ---------- core playback ----------
     def play_url(self, url):
         self._play_generation += 1
+        generation = self._play_generation
+
         # If the URL is already a local file path, play it directly.
         if isinstance(url, str) and os.path.exists(url):
             self.player.setSource(QUrl.fromLocalFile(url))
             self.player.play()
             return
 
-        stream = resolve_stream(url)
+        # Remote URL: resolving (a yt-dlp download) can take a long time, so
+        # it must never run on the UI thread. Kick it off in the background;
+        # the generation guard drops the result if the user has meanwhile
+        # picked another track or switched views.
+        print(f"[player] resolving stream in background: {url}", flush=True)
+        worker = StreamResolveWorker(url, generation)
+        worker.resolved.connect(self._on_stream_resolved)
+        self._resolve_workers.append(worker)
+        worker.finished.connect(lambda w=worker: self._forget_resolve_worker(w))
+        worker.start()
+
+    def _on_stream_resolved(self, generation, url, stream):
+        """Start playback when a background resolve finishes (main thread)."""
+        if generation != self._play_generation:
+            print("[player] stale stream resolve dropped", flush=True)
+            return
         if not stream:
             # A failed download must not be treated as a completed track.
+            print(f"[player] stream resolve failed: {url}", flush=True)
             self.player.stop()
             return
 
@@ -84,6 +121,9 @@ class Player:
             stream_url = QUrl(stream)
             self.player.setSource(stream_url)
         self.player.play()
+
+    def _forget_resolve_worker(self, worker):
+        self._resolve_workers = [w for w in self._resolve_workers if w is not worker]
 
     def play(self, url=None):
         if url:
@@ -256,6 +296,13 @@ class Player:
 
     def stop(self):
         self.player.stop()
+
+    def shutdown(self):
+        """Wait briefly for in-flight background resolves so their QThreads
+        are not destroyed while running at application exit."""
+        for worker in list(self._resolve_workers):
+            worker.wait(2000)
+        self._resolve_workers = []
     
     def seek(self, position):
         """Seek to position (0.0-1.0 relative to duration)"""

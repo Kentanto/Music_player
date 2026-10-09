@@ -109,11 +109,27 @@ class _LinuxBackend(QThread):
         for path in list_devices():
             try:
                 dev = InputDevice(path)
-                if any(p in (dev.name or "") for p in DEVICE_NAME_PATTERNS):
-                    found.append(dev)
             except OSError:
                 continue
+            if any(p in (dev.name or "") for p in DEVICE_NAME_PATTERNS):
+                found.append(dev)
+            else:
+                # Every input device on the system gets opened during the
+                # scan; close the ones we don't grab so fds don't pile up.
+                self._close_device(dev)
         return found
+
+    @staticmethod
+    def _close_device(dev):
+        """Release a device defensively; it may already be gone."""
+        try:
+            dev.ungrab()
+        except Exception:
+            pass
+        try:
+            dev.close()
+        except Exception:
+            pass
 
     def run(self):
         self._running = True
@@ -142,6 +158,7 @@ class _LinuxBackend(QThread):
                     readable.append(dev.fd)
                 except (OSError, ValueError):
                     open_devices.remove(dev)
+                    self._close_device(dev)
 
             if not readable:
                 time.sleep(self._scan_interval)
@@ -153,14 +170,23 @@ class _LinuxBackend(QThread):
                 continue
 
             for fd in rds:
-                for dev in open_devices:
-                    if dev.fd == fd:
-                        try:
-                            for event in dev.read():
-                                self._handle_event(event)
-                        except (OSError, BlockingIOError):
-                            pass
-                        break
+                for dev in list(open_devices):
+                    try:
+                        matches = dev.fd == fd
+                    except (OSError, ValueError):
+                        # The device died between select() and here; an
+                        # uncaught raise would silently kill the thread.
+                        open_devices.remove(dev)
+                        self._close_device(dev)
+                        continue
+                    if not matches:
+                        continue
+                    try:
+                        for event in dev.read():
+                            self._handle_event(event)
+                    except (OSError, BlockingIOError):
+                        pass
+                    break
 
         for dev in open_devices:
             for meth in ("ungrab", "close"):
@@ -364,7 +390,17 @@ class MocuteListener(_SignalsMixin, QObject):
 
     def available(self) -> bool:
         if HAS_EVDEV:
-            return bool(self._find_devices())
+            found = self._find_devices()
+            try:
+                return bool(found)
+            finally:
+                # The probe opens the matched devices; close them so the fds
+                # aren't leaked (start() re-opens the ones it grabs).
+                for dev in found:
+                    try:
+                        dev.close()
+                    except OSError:
+                        pass
         if sys.platform == "win32":
             return True   # native filter always available to try
         return False
@@ -397,10 +433,17 @@ class MocuteListener(_SignalsMixin, QObject):
         for path in list_devices():
             try:
                 dev = InputDevice(path)
-                if any(p in (dev.name or "") for p in DEVICE_NAME_PATTERNS):
-                    found.append(dev)
             except OSError:
                 continue
+            if any(p in (dev.name or "") for p in DEVICE_NAME_PATTERNS):
+                found.append(dev)
+            else:
+                # Close devices opened during the scan that we don't use,
+                # so the probe doesn't leak file handles.
+                try:
+                    dev.close()
+                except OSError:
+                    pass
         return found
 
     # ---- Shared action dispatcher ----

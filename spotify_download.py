@@ -196,11 +196,13 @@ def _tracks(client, playlist_url):
     return tracks
 
 
-def import_playlist(playlist_url, target_playlist_id=None, progress=None):
+def import_playlist(playlist_url, target_playlist_id=None, progress=None, should_stop=None):
     """Download a Spotify playlist and return (playlist_id, failures, name).
 
     If *target_playlist_id* is given, songs are appended to that existing
     playlist instead of creating a new one.
+    If *should_stop* is given (a callable returning bool), the import stops
+    early, between tracks, once it returns True.
     """
     spotify_id = _playlist_id(playlist_url)
     client = _spotify_client()
@@ -263,6 +265,9 @@ def import_playlist(playlist_url, target_playlist_id=None, progress=None):
             return f"{name} - {artist}", str(error)
 
     for i in range(0, len(tracks), NUM_WORKERS):
+        if should_stop and should_stop():
+            print("[spotify] stop requested; finishing import early", flush=True)
+            break
         batch = tracks[i:i + NUM_WORKERS]
         with ThreadPoolExecutor(max_workers=NUM_WORKERS) as executor:
             futures = {executor.submit(_process_one, item): item for item in batch}
@@ -304,6 +309,7 @@ class SpotifyImportWorker(QThread):
                 self.playlist_url,
                 target_playlist_id=self.target_playlist_id,
                 progress=lambda current, total, title: self.progress.emit(current, total, title),
+                should_stop=self.isInterruptionRequested,
             )
             self.completed.emit(playlist_id, len(failures), playlist_name, failure_log)
         except Exception as error:

@@ -3,7 +3,7 @@ import warnings
 from pathlib import Path
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
 from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 
 from ui import MainWindow
 from ui.queue_panel import ThumbnailLoader
@@ -35,6 +35,40 @@ from mocute_listener import MocuteListener
 warnings.filterwarnings("ignore")
 
 
+class AddSongWorker(QThread):
+    """Downloads a song into a playlist off the UI thread so the window
+    never freezes during a yt-dlp download (same pattern as SearchWorker)."""
+
+    add_finished = Signal(str)  # saved file path
+    add_failed = Signal(str)    # reason
+
+    def __init__(self, title, url, playlist_id, artist=None, thumbnail=None, parent=None):
+        super().__init__(parent)
+        self._title = title
+        self._url = url
+        self._playlist_id = playlist_id
+        self._artist = artist
+        self._thumbnail = thumbnail
+
+    def run(self):
+        try:
+            saved_path = add_song_to_playlist(
+                self._title,
+                self._url,
+                self._playlist_id,
+                artist=self._artist,
+                thumbnail=self._thumbnail,
+            )
+        except Exception as error:
+            print(f"[playlist-add] worker exception: {type(error).__name__}: {error}", flush=True)
+            self.add_failed.emit(str(error))
+            return
+        if saved_path:
+            self.add_finished.emit(saved_path)
+        else:
+            self.add_failed.emit("add_song_to_playlist returned no path")
+
+
 class MusicAppController:
     """Business logic controller - bridges UI and backend"""
     
@@ -49,6 +83,7 @@ class MusicAppController:
         self._retired_search_workers = []  # Retired search workers, same
         self._cover_token = 0  # Drops superseded cover-art loads
         self.spotify_import_worker = None
+        self.add_song_worker = None
         self.cec_remote = None
         self.gamepad = None
         self.mpris = None  # Linux MPRIS bridge (installed in install_mpris)
@@ -572,23 +607,41 @@ class MusicAppController:
             print("[playlist-add] aborted: no destination playlist selected", flush=True)
             return
 
+        # One download at a time: a second request while one is in flight
+        # would double-download and confuse the dialogs.
+        if self.add_song_worker and self.add_song_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Playlist", "Another song is still downloading. Please wait for it to finish."
+            )
+            return
+
         print(
             f"[playlist-add] starting: title={track_title!r}, url={track_url!r}, playlist_id={playlist_id}",
             flush=True,
         )
-        saved_path = add_song_to_playlist(
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.add_song_worker = AddSongWorker(
             track_title,
             track_url,
             playlist_id,
             artist=item.get("artist"),
             thumbnail=item.get("thumbnail"),
         )
-        if saved_path:
-            print(f"[playlist-add] success: {saved_path}", flush=True)
-            QMessageBox.information(self.window, "Playlist", f"Added \"{track_title}\" to playlist successfully.\n\nFile: {saved_path}")
-        else:
-            print("[playlist-add] failed: add_song_to_playlist returned no path", flush=True)
-            QMessageBox.warning(self.window, "Playlist", "Failed to add song to playlist.")
+        self.add_song_worker.add_finished.connect(
+            lambda path, title=track_title: self._on_add_song_finished(title, path)
+        )
+        self.add_song_worker.add_failed.connect(self._on_add_song_failed)
+        self.add_song_worker.start()
+
+    def _on_add_song_finished(self, title, saved_path):
+        QApplication.restoreOverrideCursor()
+        print(f"[playlist-add] success: {saved_path}", flush=True)
+        QMessageBox.information(self.window, "Playlist", f"Added \"{title}\" to playlist successfully.\n\nFile: {saved_path}")
+
+    def _on_add_song_failed(self, reason):
+        QApplication.restoreOverrideCursor()
+        print(f"[playlist-add] failed: {reason}", flush=True)
+        QMessageBox.warning(self.window, "Playlist", "Failed to add song to playlist.")
 
     def _choose_playlist(self):
         playlists = get_playlists()
@@ -692,9 +745,14 @@ class MusicAppController:
             self.search_worker.wait(2000)
         for worker in self._retired_search_workers:
             worker.wait(1000)
+        if self.add_song_worker and self.add_song_worker.isRunning():
+            self.add_song_worker.wait(3000)
         if self.spotify_import_worker and self.spotify_import_worker.isRunning():
-            self.spotify_import_worker.quit()
-            self.spotify_import_worker.wait()
+            # quit() is a no-op for a plain run() loop; ask for a
+            # cooperative stop between tracks and cap the wait so a long
+            # import can never keep the app from closing.
+            self.spotify_import_worker.requestInterruption()
+            self.spotify_import_worker.wait(3000)
         if self.cec_remote and self.cec_remote.isRunning():
             self.cec_remote.stop()
         if self.gamepad:
@@ -702,6 +760,9 @@ class MusicAppController:
         if self.mpris:
             self.mpris.shutdown()
         self.player.stop()
+        # Wait for in-flight background stream resolves so their QThreads
+        # are not destroyed while running.
+        self.player.shutdown()
     
     def _start_metadata_fetcher(self):
         """Start background thread to fetch metadata and remove long videos"""
@@ -715,12 +776,23 @@ class MusicAppController:
             self._retired_fetchers.append(old)
 
         self.metadata_fetcher = MetadataFetcher(self.current_results, max_duration=600)
-        self.metadata_fetcher.video_too_long.connect(self._on_video_too_long)
-        self.metadata_fetcher.metadata_ready.connect(self._on_metadata_ready)
+        # Bind the fetcher to the current search generation: if the user
+        # switches views before it finishes, its late arrivals are dropped
+        # instead of mutating whatever list happens to be on screen.
+        generation = self._search_generation
+        self.metadata_fetcher.video_too_long.connect(
+            lambda url, g=generation: self._on_video_too_long(g, url)
+        )
+        self.metadata_fetcher.metadata_ready.connect(
+            lambda url, metadata, g=generation: self._on_metadata_ready(g, url, metadata)
+        )
         self.metadata_fetcher.start()
 
-    def _on_metadata_ready(self, url, metadata):
+    def _on_metadata_ready(self, generation, url, metadata):
         """Enrich search result dicts with fetched duration/artist/thumbnail."""
+        if generation != self._search_generation:
+            # The view changed since this fetcher started; don't touch it.
+            return
         for result in self.current_results:
             if result.get("url") != url:
                 continue
@@ -835,8 +907,11 @@ class MusicAppController:
             self.window.cover_widget.set_cover_art(pixmap)
             self.window.fullscreen_player.set_cover_art(pixmap)
     
-    def _on_video_too_long(self, url):
+    def _on_video_too_long(self, generation, url):
         """Remove a video from results if it's too long"""
+        if generation != self._search_generation:
+            # The view changed since this fetcher started; don't touch it.
+            return
         # Remove from internal list
         self.current_results = [r for r in self.current_results if r.get("url") != url]
         # Keep the queue panel's master list in sync so the removed video
