@@ -2,6 +2,5 @@ fixes/features needed:
 - cec remote needs fast pause availability
 - cec remote needs a fast fullscreen button
 - cec needs a ch override to be right click for mouse instead of ch
-- fullscreen mode needs the seek bar to have the correct whitening selection when hovered through key press or mouse
-- search up spotify list feature that doesnt download songs but rather makes a list only by names where none of the songs are downlaoded but top result after filtering is chosen to populate the list without downloading the song
-probably made as the main extension of import list, then later you have the option to download all songs to an actual folder instead of staying as cache downlaoded the ones played  from this list
+- all songs playlist extension is broken displaying digitally double alla song, but not visibly actually containing double, its sort order is completely broken compared to regular, some song arent being sortet properly due to missing properties like name and artist in any playlist
+- downloading a song with the same name as antoher replaces the other one even when they arent the same some due to anti duplicate protection mistaking it, this happened first through spotify playlist linking
