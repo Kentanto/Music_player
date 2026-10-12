@@ -131,9 +131,15 @@ def retry_all(limit=None):
                 time.sleep(DELAY_SEC)
             continue
 
-        add_downloaded_song_to_playlist(
+        if not add_downloaded_song_to_playlist(
             song_line, url, playlist_id, file_path, yt_artist, thumbnail
-        )
+        ):
+            reason_out = "Could not register the file (path already used by another song)"
+            print(f"[retry]   {reason_out}")
+            still_failed.append((song_line, reason_out))
+            if idx < len(items):
+                time.sleep(DELAY_SEC)
+            continue
         if Path(file_path).exists():
             print(f"[retry]   OK -> {file_path}")
             reloaded.append(song_line)

@@ -20,8 +20,10 @@ from db import (
     add_song_to_playlist,
     get_playlist_songs,
     remove_playlist_song,
+    remove_song_everywhere,
     rename_playlist,
     rename_playlist_song,
+    rename_song_globally,
     delete_playlist,
     get_app_setting,
     set_app_setting,
@@ -752,12 +754,7 @@ class MusicAppController:
         if not lines:
             return  # nothing new anywhere; stay quiet
 
-        if self.current_playlist_id is None:
-            self.handle_load_playlists()
-        elif self.current_playlist_id == "all":
-            self.handle_open_playlist("all")
-        elif self.current_playlist_id in touched_ids:
-            self.handle_open_playlist(self.current_playlist_id)
+        self._refresh_current_view_for_playlists(touched_ids)
 
         QMessageBox.information(
             self.window,
@@ -911,14 +908,17 @@ class MusicAppController:
             thumbnail=item.get("thumbnail"),
         )
         self.add_song_worker.add_finished.connect(
-            lambda path, title=track_title: self._on_add_song_finished(title, path)
+            lambda path, title=track_title, pid=playlist_id: self._on_add_song_finished(title, path, pid)
         )
         self.add_song_worker.add_failed.connect(self._on_add_song_failed)
         self.add_song_worker.start()
 
-    def _on_add_song_finished(self, title, saved_path):
+    def _on_add_song_finished(self, title, saved_path, playlist_id):
         QApplication.restoreOverrideCursor()
         print(f"[playlist-add] success: {saved_path}", flush=True)
+        # Show the new song in the open view right away when it belongs there,
+        # instead of waiting for the user to reopen the playlist.
+        self._refresh_current_view_for_playlists([playlist_id])
         QMessageBox.information(self.window, "Playlist", f"Added \"{title}\" to playlist successfully.\n\nFile: {saved_path}")
 
     def _on_add_song_failed(self, reason):
@@ -1318,6 +1318,28 @@ class MusicAppController:
             return list(fallback)
         return []
 
+    def _refresh_current_view_for_playlists(self, playlist_ids):
+        """Refresh the open view after new songs landed in the given playlists.
+
+        Called whenever downloads finish (add-to-playlist, Spotify sync) so
+        newly downloaded songs appear in the visible queue without a manual
+        reopen. Views the new songs do not belong to (a different playlist,
+        a search) are left untouched. Playback is never interrupted: the
+        current track stays anchored as the queue is rebuilt around it.
+        """
+        if not playlist_ids:
+            return
+        if self.current_playlist_id == "all":
+            # The All Songs view contains every playlist's songs.
+            self.handle_open_playlist("all")
+        elif self.current_playlist_id in playlist_ids:
+            self.handle_open_playlist(self.current_playlist_id)
+        elif self.current_playlist_id is None and any(
+            item.get("type") == "playlist" for item in self.current_results
+        ):
+            # Browsing the playlist list: refresh so the song counts update.
+            self.handle_load_playlists()
+
     def handle_open_playlist(self, playlist_id):
         # Any in-flight search is stale now; don't let it replace this view.
         self._search_generation += 1
@@ -1366,17 +1388,23 @@ class MusicAppController:
         return item
 
     def handle_remove_song(self, item):
-        """Confirm and remove a local track from the open playlist."""
-        if self.current_playlist_id is None or self.current_playlist_id == "all" or not item or not item.get("file_path"):
-            if self.current_playlist_id == "all":
-                QMessageBox.information(self.window, "Remove Song", "Songs cannot be removed from the All Songs view.")
+        """Confirm and remove a local track from the open playlist.
+
+        From the All Songs view the song is removed from every playlist,
+        since that view spans all of them.
+        """
+        if self.current_playlist_id is None or not item or not item.get("file_path"):
             return
 
+        from_all_view = self.current_playlist_id == "all"
         title = item.get("title") or Path(item["file_path"]).stem
         confirmation = QMessageBox(self.window)
         confirmation.setIcon(QMessageBox.Warning)
         confirmation.setWindowTitle("Remove Song")
-        confirmation.setText(f'Remove "{title}" from this playlist and delete its file?')
+        if from_all_view:
+            confirmation.setText(f'Remove "{title}" from ALL playlists and delete its file?')
+        else:
+            confirmation.setText(f'Remove "{title}" from this playlist and delete its file?')
         confirmation.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         confirmation.setDefaultButton(QMessageBox.Yes)
         confirmation.setEscapeButton(QMessageBox.No)
@@ -1387,7 +1415,11 @@ class MusicAppController:
         if source == self.player._current_item:
             self.player.stop()
 
-        if not remove_playlist_song(self.current_playlist_id, source):
+        if from_all_view:
+            removed = remove_song_everywhere(source)
+        else:
+            removed = remove_playlist_song(self.current_playlist_id, source)
+        if not removed:
             QMessageBox.warning(self.window, "Remove Song", "The song could not be removed.")
             return
 
@@ -1450,7 +1482,12 @@ class MusicAppController:
             if self.current_playlist_id is None or not item.get("file_path"):
                 return
             old_path = item["file_path"]
-            new_path = rename_playlist_song(self.current_playlist_id, old_path, new_title)
+            if self.current_playlist_id == "all":
+                # The All Songs view spans every playlist: rename the song
+                # in all of them, not just one.
+                new_path = rename_song_globally(old_path, new_title)
+            else:
+                new_path = rename_playlist_song(self.current_playlist_id, old_path, new_title)
             if not new_path:
                 raise ValueError("The song file could not be renamed.")
             for track in self.current_results:

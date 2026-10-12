@@ -756,6 +756,117 @@ def rename_playlist_song(playlist_id, file_path, new_title):
     return str(target)
 
 
+def remove_song_everywhere(file_path, delete_file=True):
+    """Remove a song from every playlist and delete its local audio file(s).
+
+    The All Songs view spans all playlists, so removing a song from it takes
+    the song out of every playlist that contains it. When the same song was
+    downloaded into several playlists, every copy's file is deleted too.
+    Files the database does not track are simply deleted.
+    """
+    if not file_path:
+        return False
+
+    conn = sqlite3.connect(DB)
+    try:
+        row = conn.execute(
+            "SELECT song_id FROM playlist_songs WHERE file_path=? LIMIT 1",
+            (str(file_path),),
+        ).fetchone()
+        song_id = row[0] if row else None
+        if song_id:
+            copy_paths = [
+                r[0] for r in conn.execute(
+                    "SELECT file_path FROM playlist_songs WHERE song_id=?",
+                    (song_id,),
+                ).fetchall()
+            ]
+        else:
+            copy_paths = []
+    finally:
+        conn.close()
+
+    if delete_file:
+        paths_to_delete = copy_paths or [str(file_path)]
+        failed = []
+        for p in paths_to_delete:
+            try:
+                Path(p).unlink(missing_ok=True)
+            except OSError:
+                failed.append(p)
+        if failed and str(file_path) in failed:
+            # The selected song's file could not be deleted; keep the
+            # database untouched so the entry stays consistent.
+            return False
+        # A copy in another playlist failing to delete is rare (its row is
+        # still removed; the leftover file would reappear as untracked).
+
+    with sqlite3.connect(DB) as conn:
+        if song_id:
+            conn.execute("DELETE FROM playlist_songs WHERE song_id=?", (song_id,))
+        conn.execute(
+            "DELETE FROM playlist_songs WHERE file_path=?",
+            (str(file_path),),
+        )
+        conn.commit()
+    return True
+
+
+def rename_song_globally(file_path, new_title):
+    """Rename a local song and update its title and path in every playlist.
+
+    Unlike rename_playlist_song this is not tied to one playlist: the file
+    and the database rows of every playlist that contains it are updated,
+    which is what the All Songs view needs.
+    """
+    new_title = str(new_title).strip()
+    if not file_path or not new_title:
+        return None
+
+    source = Path(file_path)
+    conn = sqlite3.connect(DB)
+    try:
+        row = conn.execute(
+            "SELECT song_id FROM playlist_songs WHERE file_path=? LIMIT 1",
+            (str(file_path),),
+        ).fetchone()
+    finally:
+        conn.close()
+    song_id = row[0] if row else None
+    if not source.exists():
+        return None
+
+    target = source.with_name(f"{_sanitize_filename(new_title)}{source.suffix}")
+    if target != source and target.exists():
+        return None
+    sidecar = Path(thumbnail_path_for_audio(source))
+    target_sidecar = Path(thumbnail_path_for_audio(target))
+
+    if target != source:
+        source.rename(target)
+        if sidecar.exists():
+            sidecar.rename(target_sidecar)
+    try:
+        conn = sqlite3.connect(DB)
+        try:
+            if song_id:
+                conn.execute("UPDATE songs SET title=? WHERE id=?", (new_title, song_id))
+            conn.execute(
+                "UPDATE playlist_songs SET file_path=? WHERE file_path=?",
+                (str(target), str(source)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        if target != source and target.exists():
+            target.rename(source)
+            if target_sidecar.exists():
+                target_sidecar.rename(sidecar)
+        raise
+    return str(target)
+
+
 def add_song_to_playlist(title, url, playlist_id, artist=None, thumbnail=None):
     print(
         f"[playlist-db] add request: title={title!r}, url={url!r}, playlist_id={playlist_id}",
@@ -833,7 +944,11 @@ def add_song_to_playlist(title, url, playlist_id, artist=None, thumbnail=None):
 
 
 def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=None, thumbnail=None):
-    """Register an existing download and preserve metadata from an external catalog."""
+    """Register an existing download and preserve metadata from an external catalog.
+
+    Returns None when the file path is already used by another playlist entry
+    (paths are unique), instead of silently dropping the song.
+    """
     song_id = save_song(title, url, artist, thumbnail)
     if not song_id or not file_path:
         return None
@@ -845,10 +960,63 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
             (playlist_id, song_id, file_path),
         )
         conn.commit()
+        registered = conn.execute(
+            "SELECT 1 FROM playlist_songs WHERE playlist_id=? AND song_id=?",
+            (playlist_id, song_id),
+        ).fetchone()
     finally:
         conn.close()
+    if registered is None:
+        print(
+            f"[playlist-db] WARNING: could not register {file_path!r} for {title!r}: "
+            "the file is already registered for another song",
+            flush=True,
+        )
+        return None
     download_thumbnail(thumbnail, file_path)
     return file_path
+
+
+# Extensions a finished download can end up with (the ffmpeg postprocessor
+# targets mp3, the others are safety fallbacks).
+_AUDIO_EXTS = ("mp3", "m4a", "opus", "wav", "aac")
+
+
+def _download_title_taken(stem, folder, url):
+    """True when a file named <stem>.<ext> in the folder belongs to another song.
+
+    The 'file exists -> already downloaded' shortcut is only valid when the
+    existing file is this same song (same URL). False means the name is free
+    or already holds this exact song.
+    """
+    for ext in _AUDIO_EXTS:
+        candidate = Path(folder) / f"{stem}.{ext}"
+        if not candidate.exists():
+            continue
+        existing_url = get_track_metadata(str(candidate)).get("url")
+        if existing_url and url and existing_url == url:
+            return False  # same song already downloaded here
+        return True  # a different song (or unknown file) occupies the name
+    return False
+
+
+def _unique_download_title(safe_title, folder, url):
+    """Return a download title whose file name is not used by a different song.
+
+    Download filenames come from the title alone, so two different songs with
+    the same title would land on one file: the duplicate guard would mistake
+    the new song for the old one and one song would replace the other. When
+    the name is taken by another song, ' (2)', ' (3)', ... is appended until
+    a free name is found.
+    """
+    if not _download_title_taken(safe_title, folder, url):
+        return safe_title
+    n = 2
+    while _download_title_taken(f"{safe_title} ({n})", folder, url):
+        n += 1
+    unique = f"{safe_title} ({n})"
+    print(f"[audio-download] {safe_title!r} is taken by a different song, saving as {unique!r}", flush=True)
+    return unique
 
 
 def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_metadata_update=False):
@@ -859,6 +1027,7 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
     os.makedirs(folder, exist_ok=True)
 
     safe_title = _sanitize_filename(title) or "audio"
+    safe_title = _unique_download_title(safe_title, folder, url)
     out_template = os.path.join(folder, f"{safe_title}.%(ext)s")
     print(
         f"[audio-download] start: url={url!r}, title={title!r}, folder={folder!r}, template={out_template!r}",
@@ -912,7 +1081,7 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
                     update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
                 return target_path
 
-            for ext in ["mp3", "m4a", "opus", "wav", "aac"]:
+            for ext in _AUDIO_EXTS:
                 alt_path = os.path.join(folder, f"{safe_title}.{ext}")
                 if os.path.exists(alt_path):
                     if use_yt_thumbnail:
@@ -990,41 +1159,37 @@ def get_track_metadata(file_path):
     return {"title": row[0], "artist": row[1], "thumbnail": row[2], "url": row[3]}
 
 
-def get_all_songs_from_all_playlists():
-    """Return de-duplicated list of all songs across every playlist, preserving first appearance order."""
-    with sqlite3.connect(DB) as conn:
-        rows = conn.execute(
-            "SELECT ps.file_path, s.url FROM playlist_songs ps "
-            "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.position"
-        ).fetchall()
-    seen = set()
-    result = []
-    for row in rows:
-        url = row[1]
-        key = url if url else row[0]
-        if key not in seen:
-            seen.add(key)
-            result.append(row[0])
-    return result
-
-
 def get_all_playlist_songs_flat():
-    """Return all unique songs across every playlist as (title, url, file_path, artist, added_at) rows, preserving first appearance order."""
+    """Return all unique songs across every playlist as (title, url, file_path, artist, added_at) rows.
+
+    Rows come back in the order the songs were added, the same order a
+    regular playlist uses. Duplicates across playlists are collapsed by URL
+    (or file path when there is no URL), keeping the first appearance.
+    Audio files sitting in playlist folders that the database does not track
+    yet are merged in at the end.
+    """
     with sqlite3.connect(DB) as conn:
         rows = conn.execute(
             "SELECT s.title, s.url, ps.file_path, s.artist, ps.added_at FROM playlist_songs ps "
-            "JOIN songs s ON ps.song_id = s.id ORDER BY ps.playlist_id, ps.id"
+            "JOIN songs s ON ps.song_id = s.id ORDER BY ps.id"
         ).fetchall()
     seen = set()
+    tracked_paths = set()
     result = []
     for row in rows:
         url = row[1]
-        key = url if url else row[2]
+        file_path = row[2]
+        if file_path:
+            tracked_paths.add(file_path)
+        key = url if url else file_path
         if key not in seen:
             seen.add(key)
             result.append(tuple(row))
 
-    # Merge in any audio files present in playlist folders but not yet tracked in the DB
+    # Merge in any audio files present in playlist folders but not yet
+    # tracked in the DB. Paths the DB already tracks are skipped: their rows
+    # are in the list above, and re-adding them here used to double the
+    # All Songs count.
     audio_extensions = {".mp3", ".m4a", ".opus", ".wav", ".aac"}
     for folder_path in sorted(PLAYLISTS_DIR.iterdir()):
         if not folder_path.is_dir():
@@ -1032,8 +1197,9 @@ def get_all_playlist_songs_flat():
         for file_path in sorted(folder_path.iterdir()):
             if file_path.suffix.lower() in audio_extensions:
                 fp = str(file_path)
-                if fp not in seen:
-                    seen.add(fp)
-                    result.append((file_path.stem, None, fp, None, None))
+                if fp in tracked_paths or fp in seen:
+                    continue
+                seen.add(fp)
+                result.append((file_path.stem, None, fp, None, _file_mtime_iso(file_path)))
 
     return result

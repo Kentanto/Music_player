@@ -255,9 +255,12 @@ def _download_track_to_playlist(track, playlist_id, folder):
     images = track.get("album", {}).get("images") or []
     thumbnail = images[0].get("url") if images else candidate.get("thumbnail")
     yt_artist = candidate.get("uploader") or artist
-    add_downloaded_song_to_playlist(
+    if not add_downloaded_song_to_playlist(
         name, candidate["url"], playlist_id, file_path, yt_artist, thumbnail
-    )
+    ):
+        # Without a playlist entry the song would go missing while the sync
+        # marks it downloaded; report it as a failure so it stays retryable.
+        raise RuntimeError("Downloaded audio could not be registered")
     return name, artist
 
 
