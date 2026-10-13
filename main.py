@@ -2,8 +2,8 @@ import sys
 import warnings
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QInputDialog, QMessageBox, QPushButton,
-    QTextEdit, QVBoxLayout,
+    QApplication, QDialog, QHBoxLayout, QInputDialog, QMessageBox,
+    QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
 )
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt, QThread, Signal
@@ -37,6 +37,7 @@ from db import (
 )
 from metadata_fetcher import MetadataFetcher
 from spotify_download import SpotifyImportWorker, SpotifyLinkWorker, SpotifySyncWorker
+from retry_failed import RetryFailedWorker, parse_failures
 from cec_remote import CecRemoteListener
 from mocute_listener import MocuteListener
 
@@ -95,6 +96,7 @@ class MusicAppController:
         self.spotify_link_worker = None
         self.spotify_sync_worker = None
         self.add_song_worker = None
+        self.retry_failed_worker = None
         self.cec_remote = None
         self.gamepad = None
         self.mpris = None  # Linux MPRIS bridge (installed in install_mpris)
@@ -852,10 +854,108 @@ class MusicAppController:
         layout.addWidget(editor)
         if len(shown) < len(lines):
             editor.append(f"\n(showing the last {len(shown)} of {len(lines)} entries — full log: {log_path})")
+        # Retry every song on the list, then keep only the ones that fail again
+        buttons = QHBoxLayout()
+        retry_btn = QPushButton("Retry Failed Songs", dialog)
+        retry_btn.clicked.connect(
+            lambda: self._start_retry_failed(target_id, name, folder, dialog)
+        )
+        buttons.addWidget(retry_btn)
         close_btn = QPushButton("Close", dialog)
         close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
         dialog.exec()
+
+    def _start_retry_failed(self, playlist_id, playlist_name, folder, dialog):
+        """Retry every song on a playlist's failure log without freezing the UI."""
+        if self.retry_failed_worker and self.retry_failed_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Retry Failed Songs",
+                "A retry is already running. Please wait for it to finish."
+            )
+            return
+        if self.add_song_worker and self.add_song_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Retry Failed Songs",
+                "Another song is still downloading. Please wait for it to finish."
+            )
+            return
+
+        # Only lines with the "[timestamp] song: reason" format can be retried.
+        log_path = Path(folder) / "failed_songs.txt"
+        total = len(parse_failures(log_path))
+        if not total:
+            QMessageBox.information(
+                self.window, "Retry Failed Songs",
+                f'No retryable songs found on the Failed Songs list for "{playlist_name}".'
+            )
+            return
+
+        dialog.accept()  # close the log; the progress dialog takes over
+
+        worker = RetryFailedWorker(playlist_id, folder, self.window)
+        self.retry_failed_worker = worker
+
+        progress_dialog = QProgressDialog(
+            f"Retrying 1/{total} …", "Cancel", 0, total, self.window
+        )
+        progress_dialog.setWindowTitle(f"Retry Failed Songs — {playlist_name}")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.canceled.connect(worker.requestInterruption)
+        progress_dialog.show()
+
+        def on_retry_progress(current, count, song):
+            progress_dialog.setValue(max(current - 1, 0))
+            progress_dialog.setLabelText(f"Retrying {current}/{count}:\n{song}")
+
+        worker.progress.connect(on_retry_progress)
+        worker.completed.connect(
+            lambda summary: self._on_retry_completed(
+                summary, playlist_id, playlist_name, progress_dialog
+            )
+        )
+        worker.failed.connect(
+            lambda reason: self._on_retry_failed(reason, progress_dialog)
+        )
+        self.window.sidebar.view_failures_btn.setEnabled(False)
+        worker.finished.connect(
+            lambda: self.window.sidebar.view_failures_btn.setEnabled(True)
+        )
+        worker.start()
+
+    def _on_retry_completed(self, summary, playlist_id, playlist_name, progress_dialog):
+        """Summarize a finished retry run; the log already holds the failures."""
+        progress_dialog.close()
+
+        downloaded = summary["downloaded"]
+        still_failed = summary["still_failed"]
+        if downloaded:
+            self._refresh_current_view_for_playlists([playlist_id])
+
+        lines = [f'Retry finished for "{playlist_name}".']
+        lines.append(f"{len(downloaded)} song(s) downloaded.")
+        if still_failed:
+            lines.append(
+                f"{len(still_failed)} song(s) failed again — they were put back "
+                "on the Failed Songs list."
+            )
+        else:
+            lines.append("No songs failed this time — the Failed Songs list was cleared.")
+        if summary["not_retried"]:
+            lines.append(f"{summary['not_retried']} song(s) were not retried and stayed on the list.")
+        QMessageBox.information(self.window, "Retry Failed Songs", "\n".join(lines))
+
+        if summary["bot_blocked"] and not get_ytdlp_cookie_options():
+            self._offer_cookie_setup(len(still_failed) or 1)
+
+    def _on_retry_failed(self, reason, progress_dialog):
+        progress_dialog.close()
+        QMessageBox.warning(self.window, "Retry Failed Songs", f"Retry failed: {reason}")
+
 
     def handle_add_to_playlist(self, item=None):
         """Add selected song to an existing or new playlist."""
@@ -1041,6 +1141,10 @@ class MusicAppController:
         if self.spotify_sync_worker and self.spotify_sync_worker.isRunning():
             self.spotify_sync_worker.requestInterruption()
             self.spotify_sync_worker.wait(3000)
+        if self.retry_failed_worker and self.retry_failed_worker.isRunning():
+            # Same cooperative stop between songs as the Spotify workers.
+            self.retry_failed_worker.requestInterruption()
+            self.retry_failed_worker.wait(3000)
         if self.cec_remote and self.cec_remote.isRunning():
             self.cec_remote.stop()
         if self.gamepad:
