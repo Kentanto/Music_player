@@ -102,6 +102,10 @@ class MusicAppController:
         self.mpris = None  # Linux MPRIS bridge (installed in install_mpris)
         self.active_queue_urls = []
         self.current_playlist_id = None
+        # (source, track dict) of the last track whose info was shown as
+        # "now playing" — lets the title/artwork survive switching to a view
+        # that does not contain the playing song.
+        self._now_playing_item = None
         
         # Connect player signals to update UI
         self.player.signals.position_changed.connect(self.on_player_position_changed)
@@ -482,9 +486,13 @@ class MusicAppController:
     def _playing_source(self):
         """Source of the track actually playing (or last played), or None
         while playback has never been started — the queue's anchor song
-        must not pose as 'now playing' on a freshly opened playlist."""
+        must not pose as 'now playing' on a freshly opened playlist.
+
+        Uses _playing_item, not _current_item: the anchor is re-pointed at
+        the first song whenever a playlist that does not contain the playing
+        track is opened, but the audible track must stay "now playing"."""
         if self.player._has_media:
-            return self.player._current_item
+            return self.player._playing_item
         return None
 
     def handle_shuffle_toggle(self, enabled):
@@ -1202,10 +1210,11 @@ class MusicAppController:
 
     def _update_now_playing(self):
         """Update the UI with the currently playing track title and artwork."""
-        current_item = self.player._current_item
-        if current_item is None or not self.player._has_media:
+        current_item = self._playing_source()
+        if current_item is None:
             # Nothing has actually been played yet — the queue's anchor must
             # not pose as "now playing".
+            self._now_playing_item = None
             self.window.cover_widget.set_track_info("No track selected")
             self.window.cover_widget.clear()
             self.window.player_bar.set_track_info("No track selected")
@@ -1231,6 +1240,15 @@ class MusicAppController:
             ),
             None,
         )
+        if matching_track is not None:
+            # Remember the info keyed by source: browsing to a view that does
+            # not contain the playing song keeps showing the real title and
+            # artwork instead of jumping to whatever the new view anchors on.
+            self._now_playing_item = (current_item, matching_track)
+        else:
+            cached = self._now_playing_item
+            matching_track = cached[1] if cached and cached[0] == current_item else None
+
         if matching_track is not None:
             title, artist, artwork = self._track_display_data(matching_track)
         else:
@@ -1516,8 +1534,12 @@ class MusicAppController:
             return
 
         source = item["file_path"]
-        if source == self.player._current_item:
+        if source == self.player._playing_item:
+            # The removed song is the one actually playing (the queue anchor
+            # may point at another playlist's song while browsing around).
             self.player.stop()
+            self.player._playing_item = None
+            self.player._has_media = False
 
         if from_all_view:
             removed = remove_song_everywhere(source)
@@ -1604,6 +1626,10 @@ class MusicAppController:
                 new_path if source == old_path else source
                 for source in self._current_visual_order(fallback=self.active_queue_urls)
             ]
+            if self.player._playing_item == old_path:
+                # The renamed file is the one actually playing — keep the
+                # "now playing" identity pointed at its new path.
+                self.player._playing_item = new_path
             current_item = new_path if self.player._current_item == old_path else self.player._current_item
             self.player.set_queue(self.active_queue_urls, current_item=current_item)
             self._refresh_queue_display()

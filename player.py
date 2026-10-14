@@ -60,6 +60,12 @@ class Player:
         self._base_queue = []
         self._ordered_queue = []
         self._current_item = None
+        # The source that is ACTUALLY playing.  _current_item doubles as the
+        # queue anchor, so opening a playlist that does not contain the
+        # playing track re-anchors it on that playlist's first song.  This
+        # field is only ever written in play_url(), which keeps the "now
+        # playing" identity stable while the queue anchor moves around.
+        self._playing_item = None
         self._shuffle_order = []
         self._shuffle_seed = None
         self._play_generation = 0
@@ -90,8 +96,9 @@ class Player:
         self._play_generation += 1
         generation = self._play_generation
         # A concrete track is being started — from now on the UI may treat
-        # _current_item as "now playing".
+        # this as "now playing".
         self._has_media = True
+        self._playing_item = url
 
         # If the URL is already a local file path, play it directly.
         if isinstance(url, str) and os.path.exists(url):
