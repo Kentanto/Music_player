@@ -8,7 +8,9 @@ Two ways to use it:
 
 Either way, after the run the playlist's failed_songs.txt is cleared and
 rewritten with only the songs that failed again, so the Failed Songs list
-always reflects the current state.
+always reflects the current state. Lines in the log that are not about a
+song (playlist-level notices, e.g. a failed Spotify link check) are never
+retried and are kept in the log exactly as they were.
 """
 
 import re
@@ -31,6 +33,14 @@ SEARCH_LIMIT = 6         # results to ask YouTube for per song
 PRE_DOWNLOAD_PAUSE = 3    # short pause before each download
 DELAY_SEC = 12            # pause between songs to avoid the bot wall
 
+# Labels that mark a failure-log entry as being about the playlist itself
+# instead of a song. The Spotify sync writes one of these when it cannot
+# even read the playlist from the Spotify API (timeout, deleted playlist,
+# ...) — nothing about it can be downloaded, so a retry run must skip it
+# and leave the line in the log untouched. spotify_download.py builds its
+# link-check label from this prefix so the two can never drift apart.
+PLAYLIST_NOTICE_PREFIX = "Spotify link check for '"
+
 _FAILURE_LINE = re.compile(r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\] (.+?): (.+)")
 
 
@@ -38,29 +48,52 @@ def failure_log_path(folder):
     return Path(folder) / FAILURE_LOG_NAME
 
 
-def parse_failures(log_path):
-    """Return [(song, reason, original_line)] parsed from a failure log.
+def read_failure_log(log_path):
+    """Split a failure log into retryable songs and lines to leave alone.
 
-    The log has one song per line: "[timestamp] Song: reason". The same song
-    can appear more than once (one line per failed attempt); only the first
-    occurrence is kept so a retry tries each song once.
+    Returns (items, other_lines):
+
+    - items: one entry per song that can be retried,
+      [(song, reason, original_line)]. The same song can appear more than
+      once in the log (one line per failed attempt); only the first
+      occurrence is kept so a retry tries each song once.
+    - other_lines: everything that is not a song — playlist notices (see
+      PLAYLIST_NOTICE_PREFIX) and lines in an unknown format. They can
+      never be retried and are written back to the log exactly as they
+      were, so the Failed Songs dialog keeps showing them.
     """
     log_path = Path(log_path)
     if not log_path.exists():
-        return []
+        return [], []
     items = []
+    other_lines = []
     seen = set()
     for original_line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not original_line.strip():
             continue
         match = _FAILURE_LINE.match(original_line)
         if not match:
+            other_lines.append(original_line)
             continue
         song, reason = match.group(1), match.group(2)
+        if song.startswith(PLAYLIST_NOTICE_PREFIX):
+            other_lines.append(original_line)
+            continue
         if song in seen:
             continue
         seen.add(song)
         items.append((song, reason, original_line))
+    return items, other_lines
+
+
+def parse_failures(log_path):
+    """Return [(song, reason, original_line)] of the retryable failures.
+
+    Thin wrapper over read_failure_log for callers that only need the
+    songs (e.g. counting them for the retry progress dialog). Playlist
+    notices and unknown lines are skipped — they are not songs.
+    """
+    items, _ = read_failure_log(log_path)
     return items
 
 
@@ -76,14 +109,16 @@ def _pause(seconds, should_stop):
         time.sleep(min(0.5, remaining))
 
 
-def _write_failure_log(log_path, still_failed, untried_lines):
+def _write_failure_log(log_path, still_failed, untried_lines, keep_lines=()):
     """Clear the failure log and put back only what should stay on it.
 
     Songs that failed again get a fresh timestamp; songs that were never
-    retried (a cancelled run) keep their original line so nothing is lost.
+    retried (a cancelled run) keep their original line so nothing is lost;
+    lines that are not about a song (playlist notices, unknown formats)
+    stay exactly as they were.
     """
     timestamp = datetime.now().isoformat(timespec="seconds")
-    lines = list(untried_lines)
+    lines = list(keep_lines) + list(untried_lines)
     for song, reason in still_failed:
         lines.append(f"[{timestamp}] {song}: {reason}")
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -94,13 +129,14 @@ def retry_failures(playlist_id, folder, progress=None, should_stop=None, limit=N
     """Retry every song on a playlist's failure log.
 
     Each song is searched on YouTube, downloaded into the playlist folder and
-    registered in the playlist. Afterwards failed_songs.txt is cleared and
+    registered in the playlist. Lines that are not about a song (playlist
+    notices) are left untouched. Afterwards failed_songs.txt is cleared and
     rewritten with only the songs that failed again (songs that were never
     reached keep their old line). Returns a summary dict.
     """
     folder = Path(folder)
     log_path = failure_log_path(folder)
-    items = parse_failures(log_path)
+    items, keep_lines = read_failure_log(log_path)
     total = len(items)
 
     downloaded = []
@@ -173,7 +209,7 @@ def retry_failures(playlist_id, folder, progress=None, should_stop=None, limit=N
             break
 
     untried = [items[i][2] for i in range(next_index, total)]
-    _write_failure_log(log_path, still_failed, untried)
+    _write_failure_log(log_path, still_failed, untried, keep_lines)
 
     summary_text = (
         f"Retry run at {datetime.now().isoformat(timespec='seconds')}\n"
@@ -251,7 +287,10 @@ if __name__ == "__main__":
     parser.add_argument(
         "--browser",
         default=os.environ.get("YTDLP_BROWSER", ""),
-        help="Browser to grab cookies from for yt-dlp (e.g. chrome, edge, firefox).",
+        help=(
+            "Browser to grab cookies from for yt-dlp "
+            "(e.g. chrome, edge, firefox, opera-gx, zen)."
+        ),
     )
     parser.add_argument(
         "--cookiefile",

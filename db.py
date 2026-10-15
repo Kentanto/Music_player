@@ -41,6 +41,77 @@ def _is_bot_block_error(reason):
     )
 
 
+def _browser_cookie_spec(browser):
+    """Turn a browser choice into a yt-dlp 'cookiesfrombrowser' tuple.
+
+    yt-dlp only knows a fixed list of browsers (chrome, firefox, opera, ...),
+    so browsers built on an engine it does know are mapped onto that engine
+    together with the folder their cookies live in:
+
+    - Opera GX is Opera/Chromium based -> ("opera", "<Opera GX folder>")
+    - Zen is Firefox based             -> ("firefox", "<Zen profile folder>")
+
+    When the expected folder is missing (the browser is not installed here),
+    fall back to the engine alone so yt-dlp tries its own default location
+    instead of hard-failing every download with a cookie error.
+    """
+    name = browser.strip().lower().replace(" ", "_").replace("-", "_")
+    if name == "opera_gx":
+        folder = _first_existing_folder(_opera_gx_folders())
+        return ("opera", folder) if folder else ("opera",)
+    if name == "zen":
+        folder = _first_existing_folder(_zen_folders())
+        return ("firefox", folder) if folder else ("firefox",)
+    return (browser,)
+
+
+def _first_existing_folder(candidates):
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _opera_gx_folders():
+    """Folders where Opera GX keeps its (Chromium-style) cookies."""
+    home = Path.home()
+    if sys.platform in ("cygwin", "win32"):
+        appdata = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+        return [
+            appdata / "Opera Software" / "Opera GX Stable",
+            appdata / "Opera Software" / "Opera GX",
+        ]
+    if sys.platform == "darwin":
+        return [home / "Library" / "Application Support" / "com.operasoftware.OperaGX"]
+    return [home / ".config" / "opera-gx"]
+
+
+def _zen_folders():
+    """Folders where Zen (a Firefox fork) keeps its profiles.
+
+    Zen works with yt-dlp's firefox extractor: given one of these folders
+    it finds the cookies.sqlite inside (directly, in a profile subfolder
+    or under a Profiles/ subfolder).
+    """
+    home = Path.home()
+    if sys.platform in ("cygwin", "win32"):
+        appdata = Path(os.environ.get("APPDATA") or home / "AppData" / "Roaming")
+        return [
+            appdata / "zen" / "Profiles",
+            appdata / "ZenBrowser" / "Profiles",
+        ]
+    if sys.platform == "darwin":
+        return [
+            home / "Library" / "Application Support" / "zen" / "Profiles",
+            home / "Library" / "Application Support" / "ZenBrowser" / "Profiles",
+        ]
+    return [
+        home / ".zen",
+        home / ".var" / "app" / "app.zen_browser.zen" / ".zen",
+        home / ".var" / "app" / "io.github.zen_browser.zen" / ".zen",
+    ]
+
+
 def get_ytdlp_cookie_options():
     """yt-dlp cookie options from env vars, falling back to the saved choice.
 
@@ -51,7 +122,7 @@ def get_ytdlp_cookie_options():
     opts = {}
     browser = os.environ.get("YTDLP_BROWSER") or get_app_setting("ytdlp_browser")
     if browser:
-        opts["cookiesfrombrowser"] = (browser,)
+        opts["cookiesfrombrowser"] = _browser_cookie_spec(browser)
     cookiefile = os.environ.get("YTDLP_COOKIEFILE") or get_app_setting("ytdlp_cookiefile")
     if cookiefile and Path(cookiefile).exists():
         opts["cookiefile"] = str(Path(cookiefile).resolve())

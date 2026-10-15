@@ -798,6 +798,8 @@ class MusicAppController:
             ("Edge", "edge"),
             ("Brave", "brave"),
             ("Chromium", "chromium"),
+            ("Opera GX", "opera-gx"),
+            ("Zen", "zen"),
         ]
         choices = [
             (box.addButton(label, QMessageBox.AcceptRole), value)

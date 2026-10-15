@@ -29,6 +29,7 @@ from db import (
     set_spotify_link_checked,
     set_spotify_track_status,
 )
+from retry_failed import PLAYLIST_NOTICE_PREFIX
 
 # These values are portable across operating systems. Keep them in this small
 # configuration section so the importer does not depend on shell variables.
@@ -397,7 +398,7 @@ def sync_linked_playlists(progress=None, should_stop=None):
             tracks = _tracks(client, spotify_id)
         except Exception as error:
             print(f"[spotify-sync] could not read Spotify list for '{name}': {error}", flush=True)
-            _log_failure(folder, f"Spotify link check for '{name}'", str(error))
+            _log_failure(folder, f"{PLAYLIST_NOTICE_PREFIX}{name}'", str(error))
             set_spotify_link_checked(link_id)
             results.append((program_playlist_id, name, added, failed + 1, blocked, str(_failure_log_path(folder))))
             continue
