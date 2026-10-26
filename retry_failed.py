@@ -28,7 +28,6 @@ from db import (
 )
 from search import search_youtube
 
-<<<<<<< HEAD
 FAILURE_LOG_NAME = "failed_songs.txt"
 SEARCH_LIMIT = 6         # results to ask YouTube for per song
 PRE_DOWNLOAD_PAUSE = 3    # short pause before each download
@@ -43,12 +42,10 @@ DELAY_SEC = 12            # pause between songs to avoid the bot wall
 PLAYLIST_NOTICE_PREFIX = "Spotify link check for '"
 
 _FAILURE_LINE = re.compile(r"\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\] (.+?): (.+)")
-=======
 PLAYLIST_NAME = "Chill"
 FAILURE_LOG = Path(f"playlists/{PLAYLIST_NAME}/failed_songs.txt")
 RETRY_LOG = FAILURE_LOG.with_name("retry_log.txt")
 DELAY_SEC = 12  # pause between songs to avoid bot wall
->>>>>>> fc47cb5 (failed songs manualy rebase)
 
 
 def failure_log_path(folder):
