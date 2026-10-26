@@ -10,8 +10,12 @@ project_dir = Path(globals().get("SPECPATH", Path.cwd())).resolve()
 hiddenimports = (
     collect_submodules("yt_dlp")
     + collect_submodules("spotipy")
+<<<<<<< HEAD
     + ["PySide6.QtMultimedia"]
     + ["retry_failed"]
+=======
+    + ["PySide6.QtMultimedia", "retry_failed"]
+>>>>>>> ffe213e538b1b142e7a850b51d31c7cda8973612
 )
 
 datas = [
