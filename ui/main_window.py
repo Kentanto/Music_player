@@ -15,6 +15,7 @@ from .player_bar import PlayerBar
 from .cover_widget import CoverWidget
 from .fullscreen_player import FullscreenPlayer
 from .eq_visualizer import EQVisualizer
+from .toast import ToastManager
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Music Engine")
         self.resize(1200, 800)
         self.init_ui()
+        self.toast_manager = ToastManager(self)
         self._selected_queue_item = None
         self.connect_signals()
         self._install_nav_filters()
@@ -762,6 +764,14 @@ class MainWindow(QMainWindow):
         widget.update()
 
     # ───────────────────── Standard methods ──────────────────────────────
+
+    def show_notification(self, title, message="", kind="info", duration_ms=5000):
+        """Show a non-blocking notification card at the top of the window.
+
+        kind: "success", "error" or "info" (controls the accent color).
+        Cards stack, auto-dismiss after duration_ms and close on click.
+        """
+        self.toast_manager.show_notification(title, message, kind, duration_ms)
 
     def on_queue_item_selected(self, item):
         self._selected_queue_item = item

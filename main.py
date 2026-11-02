@@ -621,10 +621,20 @@ class MusicAppController:
         message = f'Imported "{playlist_name}".\nError log: {failure_log}'
         if failed_count:
             message += f" {failed_count} track(s) were logged as failed."
-        QMessageBox.information(self.window, "Import List", message)
+        self.window.show_notification(
+            "Import finished",
+            message,
+            kind="warning" if failed_count else "success",
+            duration_ms=7000,
+        )
 
     def _on_import_failed(self, reason):
-        QMessageBox.warning(self.window, "Import List", f"Import failed: {reason}")
+        self.window.show_notification(
+            "Import failed",
+            f"Import failed: {reason}",
+            kind="error",
+            duration_ms=7000,
+        )
 
     def handle_link_spotify(self):
         """Connect a Spotify playlist to a program playlist and watch it at startup."""
@@ -750,14 +760,17 @@ class MusicAppController:
         lines = []
         touched_ids = []
         blocked_total = 0
+        had_problems = False
         for program_playlist_id, playlist_name, added, failed, blocked, _log in results:
             if not added and not failed and not blocked:
                 continue
             touched_ids.append(program_playlist_id)
             line = f'"{playlist_name}": {added} new song(s) added'
             if failed:
+                had_problems = True
                 line += f", {failed} failed (see the Failed Songs button)"
             if blocked:
+                had_problems = True
                 blocked_total += blocked
                 line += f", {blocked} blocked by YouTube's bot check (retried next start)"
             lines.append(line)
@@ -766,10 +779,11 @@ class MusicAppController:
 
         self._refresh_current_view_for_playlists(touched_ids)
 
-        QMessageBox.information(
-            self.window,
-            "Spotify Sync",
-            "Spotify sync finished.\n" + "\n".join(lines),
+        self.window.show_notification(
+            "Spotify sync finished",
+            "\n".join(lines),
+            kind="warning" if had_problems else "success",
+            duration_ms=7000,
         )
 
         if blocked_total and not get_ytdlp_cookie_options():
@@ -817,7 +831,12 @@ class MusicAppController:
                 break
 
     def _on_spotify_sync_failed(self, reason):
-        QMessageBox.warning(self.window, "Spotify Sync", f"Startup sync failed: {reason}")
+        self.window.show_notification(
+            "Spotify sync failed",
+            f"Startup sync failed: {reason}",
+            kind="error",
+            duration_ms=7000,
+        )
 
     def handle_view_failures(self):
         """Show the failed_songs.txt error log for a playlist."""
@@ -957,14 +976,24 @@ class MusicAppController:
             lines.append("No songs failed this time — the Failed Songs list was cleared.")
         if summary["not_retried"]:
             lines.append(f"{summary['not_retried']} song(s) were not retried and stayed on the list.")
-        QMessageBox.information(self.window, "Retry Failed Songs", "\n".join(lines))
+        self.window.show_notification(
+            "Retry finished",
+            "\n".join(lines),
+            kind="warning" if still_failed or summary["not_retried"] else "success",
+            duration_ms=7000,
+        )
 
         if summary["bot_blocked"] and not get_ytdlp_cookie_options():
             self._offer_cookie_setup(len(still_failed) or 1)
 
     def _on_retry_failed(self, reason, progress_dialog):
         progress_dialog.close()
-        QMessageBox.warning(self.window, "Retry Failed Songs", f"Retry failed: {reason}")
+        self.window.show_notification(
+            "Retry failed",
+            f"Retry failed: {reason}",
+            kind="error",
+            duration_ms=7000,
+        )
 
 
     def handle_add_to_playlist(self, item=None):
@@ -1000,8 +1029,10 @@ class MusicAppController:
         # One download at a time: a second request while one is in flight
         # would double-download and confuse the dialogs.
         if self.add_song_worker and self.add_song_worker.isRunning():
-            QMessageBox.information(
-                self.window, "Playlist", "Another song is still downloading. Please wait for it to finish."
+            self.window.show_notification(
+                "Download in progress",
+                "Another song is still downloading. Please wait for it to finish.",
+                kind="info",
             )
             return
 
@@ -1029,12 +1060,21 @@ class MusicAppController:
         # Show the new song in the open view right away when it belongs there,
         # instead of waiting for the user to reopen the playlist.
         self._refresh_current_view_for_playlists([playlist_id])
-        QMessageBox.information(self.window, "Playlist", f"Added \"{title}\" to playlist successfully.\n\nFile: {saved_path}")
+        self.window.show_notification(
+            "Download complete",
+            f'Added "{title}" to playlist.\n{saved_path}',
+            kind="success",
+        )
 
     def _on_add_song_failed(self, reason):
         QApplication.restoreOverrideCursor()
         print(f"[playlist-add] failed: {reason}", flush=True)
-        QMessageBox.warning(self.window, "Playlist", "Failed to add song to playlist.")
+        self.window.show_notification(
+            "Download failed",
+            f"Failed to add song to playlist.\n{reason}",
+            kind="error",
+            duration_ms=7000,
+        )
 
     def _choose_playlist(self):
         playlists = get_playlists()

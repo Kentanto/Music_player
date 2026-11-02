@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QPushButton, QMenu, QStyledItemDelegate, QStyle,
 )
-from PySide6.QtCore import QEvent, Qt, Signal, QSize, QTimer, QUrl
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
@@ -384,7 +384,13 @@ class QueuePanel(QWidget):
     def _refresh_display(self, from_sort_widget=False):
         scroll_bar = self.list_widget.verticalScrollBar()
         previous_scroll_value = scroll_bar.value()
-        was_at_bottom = previous_scroll_value >= scroll_bar.maximum()
+        # A scrollbar that has never been laid out reports 0/0 — that must
+        # not count as "the user was at the bottom" (a fresh view used to
+        # open at the bottom of the list because of this).
+        was_at_bottom = (
+            scroll_bar.maximum() > 0
+            and previous_scroll_value >= scroll_bar.maximum()
+        )
         reset_scroll = getattr(self, "_reset_scroll_on_refresh", False)
         if reset_scroll:
             self._reset_scroll_on_refresh = False
@@ -425,23 +431,39 @@ class QueuePanel(QWidget):
             if src == self.current_item_source:
                 current_idx = idx
 
-        # Follow the playing track's row when it is visible, but never
-        # auto-select an arbitrary song when nothing is playing — opening
-        # a playlist shouldn't highlight (and preview) some random row.
+        # Highlight the playing row WITHOUT letting QListWidget scroll to it.
+        # Qt's built-in current-item handling scrolls the view to the current
+        # row — and when the panel is not visible yet, it makes the view jump
+        # there the moment the window is shown. That is what kept yanking the
+        # view to the playing song instead of leaving the user where they
+        # were. The delegate paints selection from the selection model state
+        # directly, so blocking the signals does not affect how rows look.
         if current_idx >= 0:
+            selection_model = self.list_widget.selectionModel()
+            selection_model.blockSignals(True)
             self.list_widget.setCurrentRow(current_idx)
+            selection_model.blockSignals(False)
+            self.list_widget.viewport().update()
         else:
             self.list_widget.clearSelection()
+            self.list_widget.viewport().update()
+
+        # Force the rows to lay out NOW. Right after clear()/re-add the
+        # scrollbar range is stale (it only covers about half the rows), and
+        # positioning against it is what made the view "teleport back to the
+        # middle" after a delete. scrollToBottom() makes Qt run the full
+        # layout + geometry update first, so the scrollbar range is final
+        # before we place it where it belongs.
+        self.list_widget.scrollToBottom()
 
         if reset_scroll:
-            QTimer.singleShot(
-                0, lambda: self.list_widget.scrollToTop() if self.list_widget else None
-            )
-        else:
-            if was_at_bottom:
-                self.list_widget.scrollToBottom()
-            else:
-                scroll_bar.setValue(previous_scroll_value)
+            # New view (playlist opened): always start at the top. The layout
+            # is already final, so this can be done synchronously.
+            self.list_widget.scrollToTop()
+        elif not was_at_bottom:
+            # Keep the user where they were; scrollToBottom above already
+            # handled the "user was at the bottom" case.
+            scroll_bar.setValue(previous_scroll_value)
 
         # Notify the controller whenever the user causes a re-order so
         # the playback queue stays synchronized with the visible list.
