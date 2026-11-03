@@ -58,6 +58,7 @@ class FullscreenPlayer(QWidget):
         self._is_playing = False
         self._idle_mode = False
         self._cursor_hidden = False
+        self._last_wake_from_press = False  # press that left idle mode (touch)
         self._idle_timer = QTimer(self)
         self._idle_timer.setSingleShot(True)
         self._idle_timer.setInterval(self.IDLE_TIMEOUT_MS)
@@ -390,6 +391,11 @@ class FullscreenPlayer(QWidget):
             isinstance(watched, QWidget) and self.isAncestorOf(watched)
         )
         if is_fullscreen_child and event.type() in activity_events:
+            if event.type() == QEvent.Type.MouseButtonPress and self._idle_mode:
+                # A press that wakes the idle view up: the touch handler
+                # treats exactly this one press as "wake only" (it must not
+                # also exit fullscreen) and consumes the flag.
+                self._last_wake_from_press = True
             self._register_activity()
         return super().eventFilter(watched, event)
 

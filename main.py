@@ -50,6 +50,10 @@ from net_sync import SyncEngine, normalize_mac, local_mac, DEFAULT_SYNC_PORT
 # Suppress all warnings
 warnings.filterwarnings("ignore")
 
+# How long a machine waits at the end of a track for its synced peer to
+# finish the same track before moving on anyway (peer stalled or gone).
+PEER_FINISH_TIMEOUT_MS = 15000
+
 
 class AddSongWorker(QThread):
     """Downloads a song into a playlist off the UI thread so the window
@@ -122,13 +126,18 @@ class MusicAppController:
         self._sync_last_local_command = 0.0  # monotonic time of our last broadcast
         self._sync_suppress_depth = 0      # > 0 while applying a remote command
         self._sync_peer_status = {}         # mac -> last known status
+        self._sync_peer_states = {}         # mac -> (state dict, received_at)
+        self._sync_peer_finished = {}       # mac -> finished-track record from a peer
+        self._sync_pending_advance = None   # end-of-track transition held for a peer
+        self._sync_last_join_attempt = 0.0  # rate limit for joining a playing peer
         self._sync_dialog_refresh = None    # status refresh callback while open
         self._sync_state_timer = QTimer(self.window)
         self._sync_state_timer.setInterval(1000)
         self._sync_state_timer.timeout.connect(self._sync_send_state)
-        self._sync_correct_timer = QTimer(self.window)
-        self._sync_correct_timer.setInterval(500)
-        self._sync_correct_timer.timeout.connect(self._sync_correct_drift)
+        self._sync_pending_timer = QTimer(self.window)
+        self._sync_pending_timer.setSingleShot(True)
+        self._sync_pending_timer.setInterval(PEER_FINISH_TIMEOUT_MS)
+        self._sync_pending_timer.timeout.connect(self._sync_pending_advance_timeout)
         self._start_sync_engine()
         
         # Connect player signals to update UI
@@ -313,6 +322,7 @@ class MusicAppController:
 
     def _play_item(self, item):
         """Play a track and return its source, or None when nothing played."""
+        self._sync_cancel_pending_advance()
         if not item or item.get("type") == "playlist":
             return None
 
@@ -402,6 +412,7 @@ class MusicAppController:
         return True
 
     def handle_next(self):
+        self._sync_cancel_pending_advance()
         before = self._playing_source()
         self.player.next()
         self._refresh_queue_display()
@@ -422,13 +433,26 @@ class MusicAppController:
         self._refresh_queue_display()
     
     def handle_next_autoplay(self):
-        """Auto-play next track when current finishes."""
-        if self._sync_following_leader():
-            # A machine following a synced-up leader does not run its own
-            # autoplay: the leader broadcasts its next track, and that
-            # play command lands here moments later.
-            self.player.stop()
+        """Auto-play the next track when the current one finishes.
+
+        Synced machines do not chase each other's position while a song
+        plays — drift is fine. The one coordination point is the end of a
+        track: the machine that finishes first announces it and waits
+        (up to a timeout) for the peer to finish the same track too, so
+        both units play every song to the end before moving on.
+        """
+        source = self._playing_source()
+        if not source:
             return
+        identity = self._sync_identity(source)
+        if self.sync and self._sync_peer_playing_same(identity):
+            self._sync_send("finished", self._sync_track_info(self.player.get_position()))
+            if not self._sync_peer_finished_same(identity):
+                self._sync_wait_for_peer_finish(identity)
+                return
+        self._advance_after_track_end()
+
+    def _advance_after_track_end(self):
         before = self._playing_source()
         self.player._advance()
         self._refresh_queue_display()
@@ -436,6 +460,7 @@ class MusicAppController:
         self._sync_after_track_change(before)
     
     def handle_prev(self):
+        self._sync_cancel_pending_advance()
         before = self._playing_source()
         self.player.previous()
         self._refresh_queue_display()
@@ -536,6 +561,7 @@ class MusicAppController:
 
     def handle_stop(self):
         """Stop playback and tell synced-up peers."""
+        self._sync_cancel_pending_advance()
         self.player.stop()
         self._sync_send("stop", {})
 
@@ -1232,6 +1258,7 @@ class MusicAppController:
 
     def shutdown(self): 
         """Stop background work before Qt destroys the application."""
+        self._stop_sync_engine()
         if self.metadata_fetcher and self.metadata_fetcher.isRunning():
             self.metadata_fetcher.request_stop()
             self.metadata_fetcher.wait(3000)
@@ -1302,14 +1329,13 @@ class MusicAppController:
         self.sync.peer_status.connect(self._on_sync_peer_status)
         self.sync.start()
         self._sync_state_timer.start()
-        self._sync_correct_timer.start()
         print(f"[sync] engine started (this machine: {self._sync_own_id})", flush=True)
 
     def _stop_sync_engine(self):
         if not self.sync:
             return
         self._sync_state_timer.stop()
-        self._sync_correct_timer.stop()
+        self._sync_cancel_pending_advance()
         try:
             self.sync.stop()
         except Exception:
@@ -1317,10 +1343,8 @@ class MusicAppController:
         self.sync = None
         self._sync_leader_id = None
         self._sync_leader_state = None
-
-    def _sync_following_leader(self):
-        """True while another machine's playback is leading this one."""
-        return bool(self.sync and self._sync_leader_id and self._sync_leader_id != self._sync_own_id)
+        self._sync_peer_states = {}
+        self._sync_peer_finished = {}
 
     @contextlib.contextmanager
     def _sync_applying_remote(self):
@@ -1405,11 +1429,19 @@ class MusicAppController:
         }
 
     def _sync_send_state(self):
-        """Periodically tell peers where we are (only while leading)."""
+        """Periodically tell peers what is playing (every machine, both sides).
+
+        The heartbeat is informational: receivers do not chase its position.
+        It lets each machine know which track the peer is on (so track ends
+        can be coordinated) and lets an idle machine join a playing peer.
+        """
         if not self.sync:
             return
-        if self._sync_leader_id not in (None, self._sync_own_id):
-            return  # following someone else's playback
+        if not any(
+            str(status).startswith("connected")
+            for status in self.sync.peer_statuses().values()
+        ):
+            return
         source = self._playing_source()
         if not source:
             return
@@ -1426,19 +1458,49 @@ class MusicAppController:
         sender = payload.get("sender")
         if not sender or sender == self._sync_own_id or not self.sync:
             return
-        # Two machines acted at the same moment: the smaller MAC wins, the
-        # other keeps its own action.
-        if (time.monotonic() - self._sync_last_local_command) < 0.3 and sender > (self._sync_own_id or ""):
-            return
 
         if command == "state":
-            # States only matter from the current leader (or adopt a leader
-            # when nobody has claimed leadership yet).
+            # Every machine heartbeats its state; keep the freshest record
+            # for each peer (or adopt a leader when nobody claimed it yet).
+            self._sync_peer_states[sender] = (dict(payload), time.monotonic())
             if self._sync_leader_id is None and payload.get("playing"):
                 self._sync_leader_id = sender
             if self._sync_leader_id == sender:
                 self._sync_leader_state = dict(payload)
                 self._sync_leader_received_at = time.monotonic()
+            # A machine that has never played anything joins a peer that is
+            # already playing (one-shot; no continuous position chasing).
+            if (
+                payload.get("playing")
+                and not self.player._has_media
+                and time.monotonic() - self._sync_last_join_attempt > 5.0
+            ):
+                self._sync_last_join_attempt = time.monotonic()
+                with self._sync_applying_remote():
+                    self._sync_leader_id = sender
+                    payload["playing"] = True
+                    self._sync_leader_state = dict(payload)
+                    self._sync_leader_received_at = time.monotonic()
+                    self._sync_apply_play(payload)
+            return
+
+        if command == "finished":
+            record = {
+                "url": payload.get("url"),
+                "file": resolve_stored_path(payload.get("file")) if payload.get("file") else None,
+                "at": time.monotonic(),
+            }
+            self._sync_peer_finished[sender] = record
+            pending = self._sync_pending_advance
+            if pending is not None and self._sync_same_track(
+                (pending.get("url"), pending.get("file")), (record["url"], record["file"])
+            ):
+                self._sync_resolve_pending_advance()
+            return
+
+        # Two machines acted at the same moment: the smaller MAC wins, the
+        # other keeps its own action.
+        if (time.monotonic() - self._sync_last_local_command) < 0.3 and sender > (self._sync_own_id or ""):
             return
 
         self._sync_leader_id = sender
@@ -1470,7 +1532,13 @@ class MusicAppController:
                 self._sync_leader_state = None
 
     def _sync_apply_play(self, payload):
-        """Start the track a peer is playing, aligned to its position."""
+        """Start the track a peer is playing.
+
+        Switches and seeks sync both machines from that point on ONCE: the
+        incoming position is applied a single time once the media has
+        loaded, and afterwards every machine plays at its own pace (no
+        continuous drift correction).
+        """
         file_rel = payload.get("file")
         url = payload.get("url")
         title = payload.get("title") or "Synced track"
@@ -1489,6 +1557,14 @@ class MusicAppController:
             )
             return
 
+        # Already playing this exact track: both machines advance themselves
+        # at a track's end and then tell each other, so this broadcast must
+        # not restart the track that is already playing.
+        incoming = (url, file_path)
+        if self._sync_same_track(self._sync_identity(self._playing_source()), incoming):
+            return
+
+        generation = self.player._play_generation
         item = {"type": "track", "title": title}
         if file_path:
             item["file_path"] = file_path
@@ -1496,9 +1572,29 @@ class MusicAppController:
             item["url"] = url
         self._play_item(item)
 
-        # The periodic drift correction aligns the position once the media
-        # is loaded (instant for local files, after the stream download for
-        # remote URLs), using the position stored with the command.
+        # One-shot position alignment once the media has loaded (instant for
+        # local files, after the stream resolve for remote URLs).
+        if position_ms > 3000:
+            self._sync_seek_once_loaded(position_ms, generation)
+
+    def _sync_seek_once_loaded(self, target_ms, generation_before, attempts=50):
+        """Seek to a synced position a single time, once duration is known.
+
+        Gives up when the user starts a different track in the meantime.
+        """
+        generation = self.player._play_generation
+        if generation > generation_before + 1:
+            return  # a newer track started while we were waiting
+        duration = self.player.get_duration()
+        if duration > 0 and generation > generation_before:
+            with self._sync_applying_remote():
+                self.player.player.setPosition(max(0, min(int(target_ms), duration - 1)))
+            return
+        if attempts > 0:
+            QTimer.singleShot(
+                200,
+                lambda: self._sync_seek_once_loaded(target_ms, generation_before, attempts - 1),
+            )
 
     def _sync_identity(self, source):
         """(url, file_path) identity of a playing source, or (None, None)."""
@@ -1519,48 +1615,62 @@ class MusicAppController:
             return True
         return False
 
-    def _sync_correct_drift(self):
-        """Keep this machine aligned with the leader's track and position."""
-        state = self._sync_leader_state
-        if not state or not self._sync_following_leader():
+    # ---------- end-of-track coordination ----------
+
+    def _sync_peer_playing_same(self, identity):
+        """True while a connected peer is playing the same track right now."""
+        mine = (identity[0], identity[1])
+        now = time.monotonic()
+        for state, received_at in self._sync_peer_states.values():
+            if now - received_at > 10.0 or not state.get("playing"):
+                continue
+            theirs = (
+                state.get("url"),
+                resolve_stored_path(state.get("file")) if state.get("file") else None,
+            )
+            if self._sync_same_track(mine, theirs):
+                return True
+        return False
+
+    def _sync_peer_finished_same(self, identity):
+        """True if a peer already announced finishing this same track."""
+        mine = (identity[0], identity[1])
+        now = time.monotonic()
+        for record in self._sync_peer_finished.values():
+            if now - record.get("at", 0.0) > 60.0:
+                continue
+            if self._sync_same_track(mine, (record.get("url"), record.get("file"))):
+                return True
+        return False
+
+    def _sync_wait_for_peer_finish(self, identity):
+        """Hold the track transition until the peer finishes too (or times out)."""
+        self._sync_pending_advance = {
+            "url": identity[0],
+            "file": identity[1],
+            "at": time.monotonic(),
+        }
+        self._sync_pending_timer.start()
+
+    def _sync_resolve_pending_advance(self):
+        """Run the held track transition (the peer finished, or we gave up)."""
+        pending = self._sync_pending_advance
+        if pending is None:
             return
-        if state.get("sender") != self._sync_leader_id:
-            return
+        self._sync_pending_advance = None
+        self._sync_pending_timer.stop()
+        current = self._sync_identity(self._playing_source())
+        if self._sync_same_track(current, (pending.get("url"), pending.get("file"))):
+            self._advance_after_track_end()
 
-        expected_pos = int(state.get("position_ms") or 0)
-        if state.get("playing"):
-            expected_pos += (time.monotonic() - self._sync_leader_received_at) * 1000
+    def _sync_pending_advance_timeout(self):
+        """The peer never reported finishing this track — move on anyway."""
+        self._sync_resolve_pending_advance()
 
-        leader_identity = (
-            state.get("url"),
-            resolve_stored_path(state.get("file")) if state.get("file") else None,
-        )
-        my_identity = self._sync_identity(self._playing_source())
-        duration = self.player.get_duration()
-        playing_now = (
-            self.player.player.playbackState() == self.player.player.PlaybackState.PlayingState
-        )
-
-        if state.get("playing"):
-            if not self._sync_same_track(my_identity, leader_identity):
-                with self._sync_applying_remote():
-                    self._sync_apply_play(state)
-                return
-            if not playing_now and duration > 0:
-                with self._sync_applying_remote():
-                    self.player.resume()
-                return
-            if duration > 0:
-                drift = self.player.get_position() - expected_pos
-                if abs(drift) > 400:
-                    with self._sync_applying_remote():
-                        self.player.player.setPosition(
-                            max(0, min(int(expected_pos), duration - 1))
-                        )
-        else:
-            if playing_now and self._sync_same_track(my_identity, leader_identity):
-                with self._sync_applying_remote():
-                    self.player.pause()
+    def _sync_cancel_pending_advance(self):
+        """Drop a held track transition (the user acted manually)."""
+        self._sync_pending_advance = None
+        self._sync_pending_timer.stop()
 
     def _on_sync_peer_status(self, mac, status):
         """Track and surface peer connection changes."""
@@ -1578,6 +1688,12 @@ class MusicAppController:
         if not connected and self._sync_leader_id == mac:
             self._sync_leader_id = None
             self._sync_leader_state = None
+        if not connected:
+            self._sync_peer_states.pop(mac, None)
+            self._sync_peer_finished.pop(mac, None)
+            # A peer that vanished mid-track must not hold our transition.
+            if self._sync_pending_advance is not None:
+                self._sync_resolve_pending_advance()
         if self._sync_dialog_refresh:
             self._sync_dialog_refresh()
 

@@ -16,6 +16,7 @@ from .cover_widget import CoverWidget
 from .fullscreen_player import FullscreenPlayer
 from .eq_visualizer import EQVisualizer
 from .toast import ToastManager
+from .touch_gestures import TouchGestureHandler
 
 
 class MainWindow(QMainWindow):
@@ -57,6 +58,11 @@ class MainWindow(QMainWindow):
         self._selected_queue_item = None
         self.connect_signals()
         self._install_nav_filters()
+
+        # Touch-screen gestures: hold = right click, drag = list scroll,
+        # and fullscreen taps wake the view or exit it (Surface screens).
+        self._touch_gestures = TouchGestureHandler(self)
+        QApplication.instance().installEventFilter(self._touch_gestures)
 
     def init_ui(self):
         central = QWidget()
