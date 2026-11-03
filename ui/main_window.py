@@ -35,6 +35,7 @@ class MainWindow(QMainWindow):
     import_list_requested = Signal()
     link_spotify_requested = Signal()
     view_failures_requested = Signal()
+    network_sync_requested = Signal()
     open_playlist_requested = Signal(object)
     stop_requested = Signal()
     volume_mute = Signal()
@@ -129,6 +130,7 @@ class MainWindow(QMainWindow):
         self.sidebar.import_list_clicked.connect(self.import_list_requested.emit)
         self.sidebar.link_spotify_clicked.connect(self.link_spotify_requested.emit)
         self.sidebar.view_failures_clicked.connect(self.view_failures_requested.emit)
+        self.sidebar.network_sync_clicked.connect(self.network_sync_requested.emit)
         self.sidebar.playlists_clicked.connect(self.load_playlists.emit)
 
         fullscreen_shortcut = QShortcut(QKeySequence("Ctrl+F"), self)
@@ -307,6 +309,7 @@ class MainWindow(QMainWindow):
             self.sidebar.import_list_btn,
             self.sidebar.link_spotify_btn,
             self.sidebar.view_failures_btn,
+            self.sidebar.network_sync_btn,
             self.cover_widget,
             self.queue_panel.filter_input,
             self.queue_panel.sort_combo,

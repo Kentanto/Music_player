@@ -165,6 +165,49 @@ DB = data_path("music.db")
 PLAYLISTS_DIR = data_path("playlists")
 PLAYLISTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# Folder that holds music.db. Paths in the database are stored RELATIVE to
+# this folder (see to_portable_path) so that music.db plus the playlists
+# folder can be copied together onto any other machine (USB stick, a
+# Raspberry Pi, another computer, ...) and every song path still resolves
+# to that machine's own files.
+DATA_DIR = DB.parent
+
+
+def to_portable_path(path):
+    """Convert a path into the portable form stored in the database.
+
+    Paths inside DATA_DIR (the folder holding music.db) become relative to
+    it, e.g. "playlists/Chill/song.mp3" with forward slashes. Paths outside
+    DATA_DIR keep their absolute form. Relative paths are returned as-is.
+    """
+    if not path:
+        return path
+    try:
+        p = Path(path)
+    except (TypeError, ValueError):
+        return path
+    if not p.is_absolute():
+        return p.as_posix()
+    try:
+        return p.resolve().relative_to(DATA_DIR.resolve()).as_posix()
+    except (ValueError, OSError):
+        return str(p)
+
+
+def resolve_stored_path(stored):
+    """Turn a path from the database back into a usable absolute path.
+
+    Old databases store absolute paths: those are returned unchanged so
+    existing installs keep working. Portable databases store paths
+    relative to DATA_DIR: those are joined onto this machine's DATA_DIR.
+    """
+    if not stored:
+        return stored
+    p = Path(stored)
+    if p.is_absolute():
+        return str(p)
+    return str(DATA_DIR / p)
+
 
 def _sanitize_filename(value):
     value = str(value).strip()
@@ -203,6 +246,59 @@ def download_thumbnail(thumbnail_url, file_path):
         print(f"[thumbnail] Failed for {file_path}: {error}", flush=True)
         target.unlink(missing_ok=True)
         return None
+
+
+def _migrate_to_portable_paths(c):
+    """Rebase stored playlist/song paths so the database can move machines.
+
+    Two situations are handled, for every playlist:
+
+    1. This database was created here (or on a machine with the same
+       folders): absolute paths that live under DATA_DIR are rewritten
+       relative to it, so copying music.db + playlists/ elsewhere works.
+    2. This database was copied from another machine (USB stick): its
+       absolute paths point at that machine and do not exist here. When a
+       playlist folder with the same name exists under this machine's
+       PLAYLISTS_DIR, the playlist and its songs are rebased onto it.
+
+    Paths that exist and live outside DATA_DIR stay absolute.
+    """
+    # Pass 1: the playlists table. Remember folder moves for pass 2.
+    folder_moves = {}
+    for playlist_id, folder in c.execute("SELECT id, folder FROM playlists").fetchall():
+        if not folder:
+            continue
+        old = Path(str(folder).replace("\\", "/"))
+        # Playlist folders belong under this machine's PLAYLISTS_DIR: when a
+        # folder with the same name exists there, rebase onto it. That covers
+        # a database created here, one copied here whose old paths point at
+        # another machine, and one copied to another folder on this machine.
+        candidate = PLAYLISTS_DIR / old.name
+        new = candidate if candidate.exists() else old
+        portable = to_portable_path(str(new))
+        if portable != folder:
+            c.execute("UPDATE playlists SET folder=? WHERE id=?", (portable, playlist_id))
+        old_key = str(old).replace("\\", "/")
+        new_key = str(new).replace("\\", "/")
+        if old_key != new_key:
+            folder_moves[old_key] = new_key
+
+    # Pass 2: the song file paths.
+    for row_id, file_path in c.execute("SELECT id, file_path FROM playlist_songs").fetchall():
+        if not file_path:
+            continue
+        current = str(file_path).replace("\\", "/")
+        if not Path(current).is_absolute():
+            current = resolve_stored_path(current).replace("\\", "/")
+        # Rebase onto this machine's playlist folder whenever the stored path
+        # lives under a folder that moved (found in pass 1).
+        for old_prefix, new_prefix in folder_moves.items():
+            if current.startswith(old_prefix):
+                current = new_prefix + current[len(old_prefix):]
+                break
+        portable = to_portable_path(current)
+        if portable != file_path:
+            c.execute("UPDATE playlist_songs SET file_path=? WHERE id=?", (portable, row_id))
 
 
 def init_db():
@@ -260,7 +356,7 @@ def init_db():
         dt_mod = __import__("datetime")
         for row_id, fp in c.execute("SELECT id, file_path FROM playlist_songs WHERE added_at IS NULL").fetchall():
             try:
-                ts = os.path.getmtime(fp)
+                ts = os.path.getmtime(resolve_stored_path(fp))
                 added_at = dt_mod.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
             except OSError:
                 added_at = None
@@ -300,12 +396,15 @@ def init_db():
     )
     """)
 
+    # Rewrite stored paths into their portable form (see to_portable_path).
+    _migrate_to_portable_paths(c)
+
     # Register any existing playlist folders on disk.
     for folder in sorted(PLAYLISTS_DIR.iterdir()):
         if folder.is_dir():
             c.execute(
                 "INSERT OR IGNORE INTO playlists (name, folder) VALUES (?, ?)",
-                (folder.name, str(folder))
+                (folder.name, to_portable_path(folder))
             )
     conn.commit()
     conn.close()
@@ -376,11 +475,14 @@ def create_playlist(name):
         c = conn.cursor()
         c.execute(
             "INSERT OR IGNORE INTO playlists (name, folder) VALUES (?, ?)",
-            (name, str(folder))
+            (name, to_portable_path(str(folder)))
         )
         conn.commit()
         c.execute("SELECT id, name, folder FROM playlists WHERE name=?", (name,))
-        return c.fetchone()
+        row = c.fetchone()
+        if row:
+            return (row[0], row[1], resolve_stored_path(row[2]))
+        return None
     finally:
         conn.close()
 
@@ -398,6 +500,7 @@ def get_playlists():
 
     results = []
     for playlist_id, name, folder, count in playlists:
+        folder = resolve_stored_path(folder)
         if count == 0:
             count = len(_scan_playlist_folder(folder))
         else:
@@ -412,7 +515,10 @@ def get_playlist_by_id(playlist_id):
     try:
         c = conn.cursor()
         c.execute("SELECT id, name, folder FROM playlists WHERE id=?", (playlist_id,))
-        return c.fetchone()
+        row = c.fetchone()
+        if row:
+            return (row[0], row[1], resolve_stored_path(row[2]))
+        return None
     finally:
         conn.close()
 
@@ -572,12 +678,12 @@ def rename_playlist(playlist_id, new_name):
         try:
             conn.execute(
                 "UPDATE playlists SET name=?, folder=? WHERE id=?",
-                (new_name, str(new_path), playlist_id),
+                (new_name, to_portable_path(str(new_path)), playlist_id),
             )
             conn.execute(
                 "UPDATE playlist_songs SET file_path=REPLACE(file_path, ?, ?) "
                 "WHERE playlist_id=?",
-                (str(old_path), str(new_path), playlist_id),
+                (to_portable_path(str(old_path)), to_portable_path(str(new_path)), playlist_id),
             )
             conn.commit()
         finally:
@@ -730,7 +836,12 @@ def get_playlist_songs(playlist_id):
             "ORDER BY ps.id",
             (playlist_id,)
         )
-        db_songs = c.fetchall()
+        # Resolve stored paths so the rest of the app always sees absolute
+        # paths, whatever machine the database was copied from.
+        db_songs = [
+            (title, url, resolve_stored_path(fp), artist, added_at)
+            for title, url, fp, artist, added_at in c.fetchall()
+        ]
     finally:
         conn.close()
 
@@ -755,7 +866,7 @@ def get_playlist_song(playlist_id, song_id):
             (playlist_id, song_id)
         )
         row = c.fetchone()
-        return row[0] if row else None
+        return resolve_stored_path(row[0]) if row else None
 
 
 def remove_playlist_song(playlist_id, file_path, delete_file=True):
@@ -773,7 +884,7 @@ def remove_playlist_song(playlist_id, file_path, delete_file=True):
     with sqlite3.connect(DB) as conn:
         conn.execute(
             "DELETE FROM playlist_songs WHERE playlist_id=? AND file_path=?",
-            (playlist_id, str(file_path)),
+            (playlist_id, to_portable_path(str(file_path))),
         )
         conn.commit()
     return True
@@ -790,7 +901,7 @@ def rename_playlist_song(playlist_id, file_path, new_title):
     try:
         row = conn.execute(
             "SELECT song_id FROM playlist_songs WHERE playlist_id=? AND file_path=?",
-            (playlist_id, str(file_path)),
+            (playlist_id, to_portable_path(str(file_path))),
         ).fetchone()
     finally:
         conn.close()
@@ -813,7 +924,7 @@ def rename_playlist_song(playlist_id, file_path, new_title):
             conn.execute("UPDATE songs SET title=? WHERE id=?", (new_title, row[0]))
             conn.execute(
                 "UPDATE playlist_songs SET file_path=? WHERE playlist_id=? AND file_path=?",
-                (str(target), playlist_id, str(source)),
+                (to_portable_path(str(target)), playlist_id, to_portable_path(str(source))),
             )
             conn.commit()
         finally:
@@ -842,12 +953,12 @@ def remove_song_everywhere(file_path, delete_file=True):
     try:
         row = conn.execute(
             "SELECT song_id FROM playlist_songs WHERE file_path=? LIMIT 1",
-            (str(file_path),),
+            (to_portable_path(str(file_path)),),
         ).fetchone()
         song_id = row[0] if row else None
         if song_id:
             copy_paths = [
-                r[0] for r in conn.execute(
+                resolve_stored_path(r[0]) for r in conn.execute(
                     "SELECT file_path FROM playlist_songs WHERE song_id=?",
                     (song_id,),
                 ).fetchall()
@@ -872,12 +983,13 @@ def remove_song_everywhere(file_path, delete_file=True):
         # A copy in another playlist failing to delete is rare (its row is
         # still removed; the leftover file would reappear as untracked).
 
+    portable_path = to_portable_path(str(file_path))
     with sqlite3.connect(DB) as conn:
         if song_id:
             conn.execute("DELETE FROM playlist_songs WHERE song_id=?", (song_id,))
         conn.execute(
             "DELETE FROM playlist_songs WHERE file_path=?",
-            (str(file_path),),
+            (portable_path,),
         )
         conn.commit()
     return True
@@ -899,7 +1011,7 @@ def rename_song_globally(file_path, new_title):
     try:
         row = conn.execute(
             "SELECT song_id FROM playlist_songs WHERE file_path=? LIMIT 1",
-            (str(file_path),),
+            (to_portable_path(str(file_path)),),
         ).fetchone()
     finally:
         conn.close()
@@ -924,7 +1036,7 @@ def rename_song_globally(file_path, new_title):
                 conn.execute("UPDATE songs SET title=? WHERE id=?", (new_title, song_id))
             conn.execute(
                 "UPDATE playlist_songs SET file_path=? WHERE file_path=?",
-                (str(target), str(source)),
+                (to_portable_path(str(target)), to_portable_path(str(source))),
             )
             conn.commit()
         finally:
@@ -999,13 +1111,13 @@ def add_song_to_playlist(title, url, playlist_id, artist=None, thumbnail=None):
         if existing_row:
             c.execute(
                 "UPDATE playlist_songs SET file_path=? WHERE id=?",
-                (file_path, existing_row[0]),
+                (to_portable_path(file_path), existing_row[0]),
             )
             print(f"[playlist-db] repaired existing row: id={existing_row[0]}", flush=True)
         else:
             c.execute(
                 "INSERT INTO playlist_songs (playlist_id, song_id, file_path, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-                (playlist_id, song_id, file_path),
+                (playlist_id, song_id, to_portable_path(file_path)),
             )
             print(f"[playlist-db] inserted: playlist_id={playlist_id}, song_id={song_id}", flush=True)
         conn.commit()
@@ -1028,7 +1140,7 @@ def add_downloaded_song_to_playlist(title, url, playlist_id, file_path, artist=N
     try:
         conn.execute(
             "INSERT OR IGNORE INTO playlist_songs (playlist_id, song_id, file_path, added_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
-            (playlist_id, song_id, file_path),
+            (playlist_id, song_id, to_portable_path(str(file_path))),
         )
         conn.commit()
         registered = conn.execute(
@@ -1223,7 +1335,7 @@ def get_track_metadata(file_path):
             "SELECT s.title, s.artist, s.thumbnail, s.url "
             "FROM playlist_songs ps JOIN songs s ON s.id = ps.song_id "
             "WHERE ps.file_path=? LIMIT 1",
-            (str(file_path),),
+            (to_portable_path(str(file_path)),),
         ).fetchone()
     if not row:
         return {}
@@ -1249,13 +1361,15 @@ def get_all_playlist_songs_flat():
     result = []
     for row in rows:
         url = row[1]
-        file_path = row[2]
+        # Resolve so everything downstream (and the folder-scan merge below)
+        # works with absolute paths on this machine.
+        file_path = resolve_stored_path(row[2])
         if file_path:
             tracked_paths.add(file_path)
         key = url if url else file_path
         if key not in seen:
             seen.add(key)
-            result.append(tuple(row))
+            result.append((row[0], url, file_path, row[3], row[4]))
 
     # Merge in any audio files present in playlist folders but not yet
     # tracked in the DB. Paths the DB already tracks are skipped: their rows

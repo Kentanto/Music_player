@@ -1,12 +1,15 @@
+import contextlib
 import sys
+import time
 import warnings
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QHBoxLayout, QInputDialog, QMessageBox,
-    QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
+    QApplication, QCheckBox, QDialog, QHBoxLayout, QInputDialog, QLabel,
+    QLineEdit, QMessageBox, QProgressDialog, QPushButton, QTextEdit,
+    QVBoxLayout,
 )
 from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 
 from ui import MainWindow
 from ui.queue_panel import ThumbnailLoader
@@ -34,12 +37,15 @@ from db import (
     get_spotify_links,
     get_ytdlp_cookie_options,
     set_ytdlp_cookie_config,
+    to_portable_path,
+    resolve_stored_path,
 )
 from metadata_fetcher import MetadataFetcher
 from spotify_download import SpotifyImportWorker, SpotifyLinkWorker, SpotifySyncWorker
 from retry_failed import RetryFailedWorker, parse_failures
 from cec_remote import CecRemoteListener
 from mocute_listener import MocuteListener
+from net_sync import SyncEngine, normalize_mac, local_mac, DEFAULT_SYNC_PORT
 
 # Suppress all warnings
 warnings.filterwarnings("ignore")
@@ -106,6 +112,24 @@ class MusicAppController:
         # "now playing" — lets the title/artwork survive switching to a view
         # that does not contain the playing song.
         self._now_playing_item = None
+
+        # ---------- network sync (multiroom playback) ----------
+        self.sync = None                    # SyncEngine while enabled
+        self._sync_own_id = None
+        self._sync_leader_id = None         # machine id of the last command sender
+        self._sync_leader_state = None      # last "state" message from the leader
+        self._sync_leader_received_at = 0.0  # monotonic clock of the above
+        self._sync_last_local_command = 0.0  # monotonic time of our last broadcast
+        self._sync_suppress_depth = 0      # > 0 while applying a remote command
+        self._sync_peer_status = {}         # mac -> last known status
+        self._sync_dialog_refresh = None    # status refresh callback while open
+        self._sync_state_timer = QTimer(self.window)
+        self._sync_state_timer.setInterval(1000)
+        self._sync_state_timer.timeout.connect(self._sync_send_state)
+        self._sync_correct_timer = QTimer(self.window)
+        self._sync_correct_timer.setInterval(500)
+        self._sync_correct_timer.timeout.connect(self._sync_correct_drift)
+        self._start_sync_engine()
         
         # Connect player signals to update UI
         self.player.signals.position_changed.connect(self.on_player_position_changed)
@@ -191,8 +215,9 @@ class MusicAppController:
         self.window.seek_requested.connect(self.handle_seek)
         self.window.seek_delta_requested.connect(self.handle_seek_delta)
         self.window.fullscreen_requested.connect(self.handle_fullscreen)
-        self.window.stop_requested.connect(self.player.stop)
+        self.window.stop_requested.connect(self.handle_stop)
         self.window.volume_mute.connect(self.handle_volume_mute)
+        self.window.network_sync_requested.connect(self.handle_network_sync)
 
         fullscreen = self.window.fullscreen_player
         fullscreen.play_pause_clicked.connect(self.handle_play_pause)
@@ -204,7 +229,7 @@ class MusicAppController:
         self.cec_remote.play_pause.connect(self.handle_play_pause)
         self.cec_remote.next_track.connect(self.handle_next)
         self.cec_remote.previous_track.connect(self.handle_prev)
-        self.cec_remote.stop_requested.connect(self.player.stop)
+        self.cec_remote.stop_requested.connect(self.handle_stop)
         self.cec_remote.back_requested.connect(self.handle_back)
         self.cec_remote.navigation.connect(self.window.navigate_remote)
         self.cec_remote.select_requested.connect(self.window.activate_remote_target)
@@ -215,7 +240,7 @@ class MusicAppController:
         self.gamepad.play_pause.connect(self.handle_play_pause)
         self.gamepad.next_track.connect(self.handle_next)
         self.gamepad.previous_track.connect(self.handle_prev)
-        self.gamepad.stop_requested.connect(self.player.stop)
+        self.gamepad.stop_requested.connect(self.handle_stop)
         self.gamepad.back_requested.connect(self.handle_back)
         self.gamepad.navigation.connect(self.window.navigate_remote)
         self.gamepad.select_requested.connect(self.window.activate_remote_target)
@@ -266,6 +291,7 @@ class MusicAppController:
         if self.player.get_duration() > 0:
             self.player.resume()
             self._update_now_playing()
+            self._sync_send("resume", {"position_ms": self.player.get_position()})
             return
 
         item = self.window.queue_panel.get_current_item()
@@ -275,13 +301,24 @@ class MusicAppController:
         self.handle_play_item(item)
     
     def handle_play_item(self, item):
-        """Play a track from a dict item (shuffle-safe, index-free)"""
+        """Play a track from a dict item (shuffle-safe, index-free).
+
+        Local picks are broadcast to synced-up peers; tracks a peer picked
+        arrive through _sync_apply_play, which calls _play_item directly so
+        they are never re-broadcast back.
+        """
+        played = self._play_item(item)
+        if played:
+            self._sync_send("play", self._sync_track_info(self.player.get_position()))
+
+    def _play_item(self, item):
+        """Play a track and return its source, or None when nothing played."""
         if not item or item.get("type") == "playlist":
-            return
+            return None
 
         selected_url = self._resolve_url(item)
         if not selected_url:
-            return
+            return None
 
         # If the song is already in the active player queue, just seek to it
         # and play WITHOUT rebuilding/touching shuffle order.
@@ -292,7 +329,7 @@ class MusicAppController:
             self.player.play()
             self._refresh_queue_display()
             self._update_now_playing()
-            return
+            return selected_url
 
         urls = self.active_queue_urls or self.player._base_queue or self.window.get_current_queue_urls()
         if not urls:
@@ -306,6 +343,7 @@ class MusicAppController:
 
         self._refresh_queue_display()
         self._update_now_playing()
+        return selected_url
 
     def handle_track_selected(self, item):
         """Preview selected track metadata without changing playback.
@@ -323,6 +361,7 @@ class MusicAppController:
     
     def handle_pause(self):
         self.player.pause()
+        self._sync_send("pause", {"position_ms": self.player.get_position()})
     
     def handle_resume(self):
         if self.player.get_duration() <= 0 and self._start_queue_if_idle():
@@ -330,17 +369,20 @@ class MusicAppController:
             # resuming an empty player.
             return
         self.player.resume()
+        self._sync_send("resume", {"position_ms": self.player.get_position()})
     
     def handle_play_pause(self):
         state = self.player.player.playbackState()
 
         if state == self.player.player.PlaybackState.PlayingState:
             self.player.pause()
+            self._sync_send("pause", {"position_ms": self.player.get_position()})
             return
 
         if self.player.get_duration() > 0:
             self.player.resume()
             self._update_now_playing()
+            self._sync_send("resume", {"position_ms": self.player.get_position()})
             return
 
         item = self.window.queue_panel.get_current_item()
@@ -360,9 +402,11 @@ class MusicAppController:
         return True
 
     def handle_next(self):
+        before = self._playing_source()
         self.player.next()
         self._refresh_queue_display()
         self._update_now_playing()
+        self._sync_after_track_change(before)
     
     def handle_queue_next(self, item):
         """Insert the selected item as the next track in the current queue."""
@@ -379,14 +423,24 @@ class MusicAppController:
     
     def handle_next_autoplay(self):
         """Auto-play next track when current finishes."""
+        if self._sync_following_leader():
+            # A machine following a synced-up leader does not run its own
+            # autoplay: the leader broadcasts its next track, and that
+            # play command lands here moments later.
+            self.player.stop()
+            return
+        before = self._playing_source()
         self.player._advance()
         self._refresh_queue_display()
         self._update_now_playing()
+        self._sync_after_track_change(before)
     
     def handle_prev(self):
+        before = self._playing_source()
         self.player.previous()
         self._refresh_queue_display()
         self._update_now_playing()
+        self._sync_after_track_change(before)
 
     # ---------- MPRIS (Linux media keys / media widgets) ----------
     def install_mpris(self):
@@ -439,7 +493,7 @@ class MusicAppController:
         )
 
     def handle_mpris_stop(self):
-        self.player.stop()
+        self.handle_stop()
 
     def handle_mpris_seek(self, delta_ms):
         duration = self.player.get_duration()
@@ -451,6 +505,7 @@ class MusicAppController:
             # Keep the polled Position accurate even while paused.
             self.mpris.set_position_ms(target)
             self.mpris.emit_seeked(target)
+        self._sync_send("seek", {"position_ms": target})
 
     def handle_mpris_set_position(self, position_ms):
         duration = self.player.get_duration()
@@ -462,6 +517,7 @@ class MusicAppController:
             # Keep the polled Position accurate even while paused.
             self.mpris.set_position_ms(target)
             self.mpris.emit_seeked(target)
+        self._sync_send("seek", {"position_ms": target})
 
     def handle_mpris_raise(self):
         window = self.window
@@ -477,6 +533,11 @@ class MusicAppController:
 
     def handle_volume_mute(self):
         self.player.toggle_mute()
+
+    def handle_stop(self):
+        """Stop playback and tell synced-up peers."""
+        self.player.stop()
+        self._sync_send("stop", {})
 
     def _resolve_url(self, item):
         if not item:
@@ -1133,6 +1194,7 @@ class MusicAppController:
         self.player.seek(position)
         if self.mpris:
             self.mpris.emit_seeked(self.player.get_position())
+        self._sync_send("seek", {"position_ms": self.player.get_position()})
 
     def handle_seek_delta(self, seconds):
         """Move playback by a fixed number of seconds."""
@@ -1143,6 +1205,7 @@ class MusicAppController:
         self.player.seek(max(0.0, min(position / duration, 1.0)))
         if self.mpris:
             self.mpris.emit_seeked(self.player.get_position())
+        self._sync_send("seek", {"position_ms": self.player.get_position()})
 
     def handle_fullscreen(self):
         fullscreen = self.window.fullscreen_player
@@ -1201,10 +1264,429 @@ class MusicAppController:
             self.gamepad.stop()
         if self.mpris:
             self.mpris.shutdown()
+        self._stop_sync_engine()
         self.player.stop()
         # Wait for in-flight background stream resolves so their QThreads
         # are not destroyed while running.
         self.player.shutdown()
+
+    # ---------- network sync (multiroom playback) ----------
+
+    def _sync_configured_peers(self):
+        """Peer MAC addresses from the app settings, normalized."""
+        raw = get_app_setting("sync_peers", "") or ""
+        peers = []
+        for part in raw.replace(";", ",").replace(" ", ",").split(","):
+            mac = normalize_mac(part)
+            if mac and mac not in peers:
+                peers.append(mac)
+        return peers
+
+    def _start_sync_engine(self):
+        """Start the sync engine when enabled with at least one peer."""
+        if self.sync:
+            return
+        enabled = (get_app_setting("sync_enabled", "False") or "").lower() == "true"
+        peers = self._sync_configured_peers()
+        if not enabled or not peers:
+            return
+        try:
+            port_text = get_app_setting("sync_port") or str(DEFAULT_SYNC_PORT)
+            self.sync = SyncEngine(peers, int(port_text))
+        except Exception as error:
+            print(f"[sync] engine unavailable: {error}", flush=True)
+            self.sync = None
+            return
+        self._sync_own_id = self.sync.own_id
+        self.sync.remote_command.connect(self._on_sync_remote_command)
+        self.sync.peer_status.connect(self._on_sync_peer_status)
+        self.sync.start()
+        self._sync_state_timer.start()
+        self._sync_correct_timer.start()
+        print(f"[sync] engine started (this machine: {self._sync_own_id})", flush=True)
+
+    def _stop_sync_engine(self):
+        if not self.sync:
+            return
+        self._sync_state_timer.stop()
+        self._sync_correct_timer.stop()
+        try:
+            self.sync.stop()
+        except Exception:
+            pass
+        self.sync = None
+        self._sync_leader_id = None
+        self._sync_leader_state = None
+
+    def _sync_following_leader(self):
+        """True while another machine's playback is leading this one."""
+        return bool(self.sync and self._sync_leader_id and self._sync_leader_id != self._sync_own_id)
+
+    @contextlib.contextmanager
+    def _sync_applying_remote(self):
+        """Wrap a remote-command application so it is not re-broadcast."""
+        self._sync_suppress_depth += 1
+        try:
+            yield
+        finally:
+            self._sync_suppress_depth -= 1
+
+    def _sync_send(self, command, payload=None):
+        """Broadcast a local action to synced-up peers.
+
+        Also claims leadership: the last machine to act is the one every
+        other machine follows. Suppressed while applying a remote command
+        so nothing echoes back and forth.
+        """
+        if not self.sync or self._sync_suppress_depth > 0:
+            return
+        self._sync_leader_id = self._sync_own_id
+        self._sync_last_local_command = time.monotonic()
+        self.sync.send_command(command, payload or {})
+
+    def _sync_after_track_change(self, before):
+        """After next/prev/autoplay: tell peers what is playing now."""
+        after = self._playing_source()
+        if after and after != before:
+            self._sync_send("play", self._sync_track_info(self.player.get_position()))
+
+    def _sync_track_info(self, position_ms):
+        """Describe what is playing right now, for a sync broadcast.
+
+        The file path is sent in its portable (relative) form so it points
+        at the right file on every machine; the source URL is included so
+        machines without the file can stream the track instead.
+        """
+        source = self._playing_source()
+        if not source:
+            return None
+
+        # Find the queue item dict so remote machines get the URL too.
+        item = None
+        pools = []
+        panel = self.window.queue_panel
+        if getattr(panel, "items_data", None):
+            pools.extend(panel.items_data)
+        if getattr(panel, "master_items", None):
+            pools.extend(panel.master_items)
+        pools.extend(self.current_results)
+        for candidate in pools:
+            if isinstance(candidate, dict) and source in (
+                candidate.get("file_path"), candidate.get("url")
+            ):
+                item = candidate
+                break
+
+        file_path = None
+        url = None
+        title = None
+        artist = None
+        if item:
+            file_path = item.get("file_path")
+            url = item.get("url")
+            title = item.get("title")
+            artist = item.get("artist")
+        if not file_path and source and not source.startswith("http") and Path(source).exists():
+            file_path = source
+        if not url and source.startswith("http"):
+            url = source
+        if file_path:
+            metadata = get_track_metadata(file_path)
+            url = url or metadata.get("url")
+            title = title or metadata.get("title")
+            artist = artist or metadata.get("artist")
+
+        return {
+            "file": to_portable_path(file_path) if file_path else None,
+            "url": url,
+            "title": title or Path(source).name,
+            "artist": artist,
+            "position_ms": int(position_ms or 0),
+        }
+
+    def _sync_send_state(self):
+        """Periodically tell peers where we are (only while leading)."""
+        if not self.sync:
+            return
+        if self._sync_leader_id not in (None, self._sync_own_id):
+            return  # following someone else's playback
+        source = self._playing_source()
+        if not source:
+            return
+        state = self._sync_track_info(self.player.get_position())
+        if not state:
+            return
+        state["playing"] = (
+            self.player.player.playbackState() == self.player.player.PlaybackState.PlayingState
+        )
+        self.sync.send_command("state", state)
+
+    def _on_sync_remote_command(self, command, payload):
+        """Apply a command from a synced-up peer (runs on the UI thread)."""
+        sender = payload.get("sender")
+        if not sender or sender == self._sync_own_id or not self.sync:
+            return
+        # Two machines acted at the same moment: the smaller MAC wins, the
+        # other keeps its own action.
+        if (time.monotonic() - self._sync_last_local_command) < 0.3 and sender > (self._sync_own_id or ""):
+            return
+
+        if command == "state":
+            # States only matter from the current leader (or adopt a leader
+            # when nobody has claimed leadership yet).
+            if self._sync_leader_id is None and payload.get("playing"):
+                self._sync_leader_id = sender
+            if self._sync_leader_id == sender:
+                self._sync_leader_state = dict(payload)
+                self._sync_leader_received_at = time.monotonic()
+            return
+
+        self._sync_leader_id = sender
+        with self._sync_applying_remote():
+            if command == "play":
+                payload["playing"] = True
+                self._sync_leader_state = dict(payload)
+                self._sync_leader_received_at = time.monotonic()
+                self._sync_apply_play(payload)
+            elif command == "pause":
+                self.player.pause()
+                if self._sync_leader_state is not None:
+                    self._sync_leader_state["playing"] = False
+                    self._sync_leader_state["position_ms"] = int(payload.get("position_ms") or 0)
+            elif command == "resume":
+                self.player.resume()
+                if self._sync_leader_state is not None:
+                    self._sync_leader_state["playing"] = True
+            elif command == "seek":
+                duration = self.player.get_duration()
+                target = int(payload.get("position_ms") or 0)
+                if duration > 0:
+                    self.player.player.setPosition(max(0, min(target, duration - 1)))
+                if self._sync_leader_state is not None:
+                    self._sync_leader_state["position_ms"] = target
+                    self._sync_leader_received_at = time.monotonic()
+            elif command == "stop":
+                self.player.stop()
+                self._sync_leader_state = None
+
+    def _sync_apply_play(self, payload):
+        """Start the track a peer is playing, aligned to its position."""
+        file_rel = payload.get("file")
+        url = payload.get("url")
+        title = payload.get("title") or "Synced track"
+        position_ms = int(payload.get("position_ms") or 0)
+
+        file_path = resolve_stored_path(file_rel) if file_rel else None
+        if file_path and not Path(file_path).exists():
+            file_path = None  # this machine does not have that file
+        if not file_path and not url:
+            self.window.show_notification(
+                "Network sync",
+                f'The synced machine is playing "{title}", '
+                "which is not in this library.",
+                kind="warning",
+                duration_ms=5000,
+            )
+            return
+
+        item = {"type": "track", "title": title}
+        if file_path:
+            item["file_path"] = file_path
+        if url:
+            item["url"] = url
+        self._play_item(item)
+
+        # The periodic drift correction aligns the position once the media
+        # is loaded (instant for local files, after the stream download for
+        # remote URLs), using the position stored with the command.
+
+    def _sync_identity(self, source):
+        """(url, file_path) identity of a playing source, or (None, None)."""
+        if not source:
+            return (None, None)
+        if source.startswith("http"):
+            return (source, None)
+        if Path(source).exists():
+            return (get_track_metadata(source).get("url"), source)
+        return (None, source)
+
+    def _sync_same_track(self, mine, theirs):
+        my_url, my_file = mine
+        their_url, their_file = theirs
+        if my_file and their_file and my_file == their_file:
+            return True
+        if my_url and their_url and my_url == their_url:
+            return True
+        return False
+
+    def _sync_correct_drift(self):
+        """Keep this machine aligned with the leader's track and position."""
+        state = self._sync_leader_state
+        if not state or not self._sync_following_leader():
+            return
+        if state.get("sender") != self._sync_leader_id:
+            return
+
+        expected_pos = int(state.get("position_ms") or 0)
+        if state.get("playing"):
+            expected_pos += (time.monotonic() - self._sync_leader_received_at) * 1000
+
+        leader_identity = (
+            state.get("url"),
+            resolve_stored_path(state.get("file")) if state.get("file") else None,
+        )
+        my_identity = self._sync_identity(self._playing_source())
+        duration = self.player.get_duration()
+        playing_now = (
+            self.player.player.playbackState() == self.player.player.PlaybackState.PlayingState
+        )
+
+        if state.get("playing"):
+            if not self._sync_same_track(my_identity, leader_identity):
+                with self._sync_applying_remote():
+                    self._sync_apply_play(state)
+                return
+            if not playing_now and duration > 0:
+                with self._sync_applying_remote():
+                    self.player.resume()
+                return
+            if duration > 0:
+                drift = self.player.get_position() - expected_pos
+                if abs(drift) > 400:
+                    with self._sync_applying_remote():
+                        self.player.player.setPosition(
+                            max(0, min(int(expected_pos), duration - 1))
+                        )
+        else:
+            if playing_now and self._sync_same_track(my_identity, leader_identity):
+                with self._sync_applying_remote():
+                    self.player.pause()
+
+    def _on_sync_peer_status(self, mac, status):
+        """Track and surface peer connection changes."""
+        print(f"[sync] {mac}: {status}", flush=True)
+        was = self._sync_peer_status.get(mac)
+        self._sync_peer_status[mac] = status
+        connected = str(status).startswith("connected")
+        if was is not None and str(was).startswith("connected") != connected:
+            self.window.show_notification(
+                "Network sync",
+                f"{mac}: {status}",
+                kind="success" if connected else "warning",
+                duration_ms=4000,
+            )
+        if not connected and self._sync_leader_id == mac:
+            self._sync_leader_id = None
+            self._sync_leader_state = None
+        if self._sync_dialog_refresh:
+            self._sync_dialog_refresh()
+
+    def handle_network_sync(self):
+        """Open the network-sync settings dialog."""
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle("Network Sync")
+        dialog.setMinimumWidth(560)
+        layout = QVBoxLayout(dialog)
+
+        enabled_check = QCheckBox("Sync playback with other machines", dialog)
+        enabled_check.setChecked((get_app_setting("sync_enabled", "False") or "").lower() == "true")
+        layout.addWidget(enabled_check)
+
+        layout.addWidget(QLabel("Peer MAC addresses (comma separated):", dialog))
+        peers_edit = QLineEdit(get_app_setting("sync_peers", "") or "", dialog)
+        peers_edit.setPlaceholderText("e.g. aa:bb:cc:dd:ee:01, aa:bb:cc:dd:ee:02")
+        layout.addWidget(peers_edit)
+
+        port_row = QHBoxLayout()
+        port_row.addWidget(QLabel("Port:", dialog))
+        port_edit = QLineEdit(str(get_app_setting("sync_port") or DEFAULT_SYNC_PORT), dialog)
+        port_edit.setMaximumWidth(90)
+        port_row.addWidget(port_edit)
+        port_row.addStretch()
+        layout.addLayout(port_row)
+
+        own_label = QLabel(
+            f"This machine: {self._sync_own_id or local_mac()}\n"
+            "Type that address into the other machine's peer list.",
+            dialog,
+        )
+        own_label.setWordWrap(True)
+        layout.addWidget(own_label)
+
+        status_label = QLabel(dialog)
+        status_label.setWordWrap(True)
+        layout.addWidget(status_label)
+
+        def refresh_status():
+            peers = self._sync_configured_peers()
+            if not self.sync:
+                if (get_app_setting("sync_enabled", "False") or "").lower() == "true" and peers:
+                    lines = ["Engine is not running — press Save & Apply."]
+                else:
+                    lines = ["Sync is disabled."]
+            else:
+                statuses = self.sync.peer_statuses()
+                lines = [
+                    f"{mac}: {statuses.get(mac, 'waiting…')}" for mac in peers
+                ] or ["No peers configured yet."]
+            status_label.setText("\n".join(lines))
+
+        refresh_status()
+        self._sync_dialog_refresh = refresh_status
+
+        hint = QLabel(
+            "Both machines must list each other's MAC. The player keeps trying "
+            f"to reach each MAC in the background (port {DEFAULT_SYNC_PORT} by default); "
+            "when both apps run they sync up automatically and either one can "
+            "trigger the other — play, pause, seek and track changes stay "
+            "together. Tracks are matched by the synced library files, and a "
+            "machine without the file streams it by its URL instead.",
+            dialog,
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        def save_settings():
+            peers = []
+            for part in peers_edit.text().replace(";", ",").split(","):
+                mac = normalize_mac(part.strip())
+                if mac and mac not in peers:
+                    peers.append(mac)
+            if enabled_check.isChecked() and not peers:
+                QMessageBox.warning(
+                    self.window, "Network Sync",
+                    "Add at least one peer MAC address, or untick the sync checkbox.",
+                )
+                return
+            try:
+                port = int(port_edit.text().strip() or str(DEFAULT_SYNC_PORT))
+                if not (1 <= port <= 65535):
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(
+                    self.window, "Network Sync",
+                    f"The port must be a number between 1 and 65535 (default {DEFAULT_SYNC_PORT}).",
+                )
+                return
+            set_app_setting("sync_enabled", str(bool(enabled_check.isChecked())))
+            set_app_setting("sync_peers", ", ".join(peers))
+            set_app_setting("sync_port", str(port))
+            self._stop_sync_engine()
+            self._start_sync_engine()
+            refresh_status()
+
+        buttons = QHBoxLayout()
+        save_btn = QPushButton("Save & Apply", dialog)
+        save_btn.clicked.connect(save_settings)
+        buttons.addWidget(save_btn)
+        close_btn = QPushButton("Close", dialog)
+        close_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+        dialog.finished.connect(lambda _=None: setattr(self, "_sync_dialog_refresh", None))
+        dialog.exec()
+
     
     def _start_metadata_fetcher(self):
         """Start background thread to fetch metadata and remove long videos"""

@@ -10,6 +10,7 @@ class Sidebar(QWidget):
     import_list_clicked = Signal()
     link_spotify_clicked = Signal()
     view_failures_clicked = Signal()
+    network_sync_clicked = Signal()
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,6 +43,11 @@ class Sidebar(QWidget):
         self.view_failures_btn = QPushButton("Failed Songs")
         self.view_failures_btn.clicked.connect(self.view_failures_clicked.emit)
         layout.addWidget(self.view_failures_btn)
+
+        # Multiroom playback with other machines on the LAN
+        self.network_sync_btn = QPushButton("🔗 Network Sync")
+        self.network_sync_btn.clicked.connect(self.network_sync_clicked.emit)
+        layout.addWidget(self.network_sync_btn)
 
         layout.addStretch()
         
