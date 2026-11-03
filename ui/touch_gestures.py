@@ -301,7 +301,6 @@ class TouchGestureHandler(QObject):
             return self._on_move(watched, event)
         return self._on_release(watched, event)
 
-
     # ---------- gesture state machine ----------
 
     def _on_press(self, watched, event):
