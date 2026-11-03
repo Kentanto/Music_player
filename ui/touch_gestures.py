@@ -5,7 +5,9 @@ without changing how a mouse behaves:
 
 - press and hold about a second (without dragging) acts as a right click,
   so context menus (songs, playlists) can be opened from a touchscreen,
-- press, keep held and drag scrolls the queue / playlist list directly,
+- press, keep held and drag scrolls the queue / playlist list directly;
+  slow drags track the finger 1:1 while quick flicks scroll further per
+  pixel of finger travel,
 - inside the fullscreen view: a tap while the idle EQ view is showing only
   wakes the controls back up; once the controls are visible, a tap that is
   not on a button or slider exits fullscreen.
@@ -35,6 +37,15 @@ HOLD_MS = 1000        # press-and-hold before it counts as a right click
 DRAG_START_PX = 18    # movement before it counts as a drag
 CLICK_BLOCK_MS = 400  # how long clicks stay blocked after a hold or drag
 
+# --- velocity-adaptive drag scrolling ---
+# A slow drag scrolls 1:1 with the finger. The faster the finger moves,
+# the further one pixel of travel scrolls, up to FLICK_GAIN for quick
+# flicks. The gain ramps in smoothly between the two speeds so the
+# transition never feels like a jump.
+SLOW_SPEED_PXMS = 0.35  # finger speed (px/ms) up to which scrolling is 1:1
+FLICK_SPEED_PXMS = 3.0  # finger speed at which the full flick gain applies
+FLICK_GAIN = 3.5        # scroll distance per finger pixel on fast flicks
+
 
 class TouchGestureHandler(QObject):
     """Application-wide gesture filter; owned by the main window."""
@@ -51,6 +62,9 @@ class TouchGestureHandler(QObject):
         self._drag_scrolled = False
         self._scroll_view = None
         self._last_scroll_y = 0.0
+        self._last_scroll_time = 0.0
+        self._scroll_speed = 0.0      # smoothed finger speed in px/ms
+        self._scroll_residual = 0.0   # sub-unit scroll kept for the next move
         self._press_in_fullscreen = False
         self._press_in_idle = False
         self._block_clicks_until = 0.0
@@ -115,6 +129,31 @@ class TouchGestureHandler(QObject):
 
     def _blocked_now(self):
         return time.monotonic() < self._block_clicks_until
+
+    def _scroll_gain(self):
+        """Scroll-to-finger ratio for the current finger speed.
+
+        1.0 while the finger is slow (exact 1:1 tracking), rising on a
+        smooth curve to FLICK_GAIN for fast flicks.
+        """
+        speed = self._scroll_speed
+        if speed <= SLOW_SPEED_PXMS:
+            return 1.0
+        if speed >= FLICK_SPEED_PXMS:
+            return FLICK_GAIN
+        t = (speed - SLOW_SPEED_PXMS) / (FLICK_SPEED_PXMS - SLOW_SPEED_PXMS)
+        return 1.0 + (FLICK_GAIN - 1.0) * t * t
+
+    def _scroll_step_px(self):
+        """Screen pixels one scrollbar unit is worth.
+
+        Views that scroll per pixel count in pixels; per-item views
+        count in rows, whose height makes one unit.
+        """
+        if self._scroll_view.verticalScrollMode() == QAbstractItemView.ScrollMode.ScrollPerPixel:
+            return 1.0
+        row_height = self._scroll_view.sizeHintForRow(0)
+        return float(row_height) if row_height > 0 else 1.0
 
     # ---------- event filter ----------
 
@@ -202,14 +241,42 @@ class TouchGestureHandler(QObject):
             if self._scroll_view is not None:
                 self._drag_scrolled = True
                 self._last_scroll_y = event.globalPosition().y()
+                self._last_scroll_time = time.monotonic()
+                self._scroll_speed = 0.0
+                self._scroll_residual = 0.0
 
         if self._drag_scrolled:
             y = event.globalPosition().y()
+            now = time.monotonic()
             delta_y = y - self._last_scroll_y
             self._last_scroll_y = y
+
             bar = self._scroll_view.verticalScrollBar()
             if bar is not None:
-                bar.setValue(bar.value() - int(round(delta_y)))
+                # Smoothed finger speed (px/ms) picks the scroll-to-finger
+                # ratio: 1:1 while slow, amplified for quick flicks.
+                elapsed_ms = (now - self._last_scroll_time) * 1000.0
+                self._last_scroll_time = now
+                if elapsed_ms > 1.0 and delta_y != 0.0:
+                    instant = abs(delta_y) / elapsed_ms
+                    self._scroll_speed += (instant - self._scroll_speed) * 0.4
+
+                # A scrollbar unit is a pixel or a whole row depending on
+                # the view's scroll mode; the fraction that did not fill a
+                # whole unit is kept and applied on the next move so slow
+                # drags are never lost to rounding.
+                self._scroll_residual += (
+                    delta_y * self._scroll_gain() / self._scroll_step_px()
+                )
+                whole = int(self._scroll_residual)
+                self._scroll_residual -= whole
+                if whole:
+                    before = bar.value()
+                    bar.setValue(before - whole)
+                    if bar.value() == before:
+                        # Pressing against the very top or bottom: drop the
+                        # leftover so reversing direction answers at once.
+                        self._scroll_residual = 0.0
             return True
         return False
 
@@ -261,6 +328,10 @@ class TouchGestureHandler(QObject):
         self._hold_fired = False
         self._drag_scrolled = False
         self._scroll_view = None
+        self._last_scroll_y = 0.0
+        self._last_scroll_time = 0.0
+        self._scroll_speed = 0.0
+        self._scroll_residual = 0.0
         self._press_in_fullscreen = False
         self._press_in_idle = False
         self._hold_timer.stop()

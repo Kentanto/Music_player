@@ -282,6 +282,10 @@ class QueuePanel(QWidget):
         self.list_widget = QListWidget()
         self.list_widget.setItemDelegate(QueueItemDelegate(self.list_widget))
         self.list_widget.setSelectionMode(QListWidget.SingleSelection)
+        # Pixel-accurate scrolling (not whole-row jumps): the touch drag
+        # scroll in ui/touch_gestures.py can then track the finger 1:1,
+        # and mouse-wheel scrolling becomes smoother too.
+        self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
