@@ -34,7 +34,7 @@ from retry_failed import PLAYLIST_NOTICE_PREFIX
 # These values are portable across operating systems. Keep them in this small
 # configuration section so the importer does not depend on shell variables.
 SPOTIFY_CLIENT_ID = "bdb2e21d2b384b31bea7e4c622140d81"
-SPOTIFY_CLIENT_SECRET = "9fca954348d84b658aeb2987a068ef69"
+SPOTIFY_CLIENT_SECRET = "49efa61c03a941a3b4abbe5370cee39c"
 PLAYLIST_NAME = "Spotify Import"
 MIN_VIDEO_DURATION = 45
 MAX_VIDEO_DURATION = 10 * 60
