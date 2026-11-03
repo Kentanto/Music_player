@@ -59,8 +59,9 @@ class MainWindow(QMainWindow):
         self.connect_signals()
         self._install_nav_filters()
 
-        # Touch-screen gestures: hold = right click, drag = list scroll,
-        # and fullscreen taps wake the view or exit it (Surface screens).
+        # Touch-screen gestures: hold = right click, drag = list scroll
+        # with flick momentum, and fullscreen taps wake the view (only a
+        # real mouse click on empty space exits it).
         self._touch_gestures = TouchGestureHandler(self)
         QApplication.instance().installEventFilter(self._touch_gestures)
 

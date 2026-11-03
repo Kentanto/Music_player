@@ -6,11 +6,12 @@ without changing how a mouse behaves:
 - press and hold about a second (without dragging) acts as a right click,
   so context menus (songs, playlists) can be opened from a touchscreen,
 - press, keep held and drag scrolls the queue / playlist list directly;
-  slow drags track the finger 1:1 while quick flicks scroll further per
-  pixel of finger travel,
-- inside the fullscreen view: a tap while the idle EQ view is showing only
-  wakes the controls back up; once the controls are visible, a tap that is
-  not on a button or slider exits fullscreen.
+  slow drags track the finger 1:1, quick flicks scroll further per pixel of
+  travel and keep gliding briefly after the finger lifts (ice feel) until
+  the speed bleeds off or the screen is touched again,
+- inside the fullscreen view: a press while the idle EQ view is showing
+  only wakes the controls back up, and a touchscreen tap never exits
+  fullscreen; only a real mouse click on empty space still does.
 
 Qt synthesizes mouse events from touch input for widgets that do not handle
 touch themselves, so this filter only looks at mouse events and works on
@@ -46,6 +47,16 @@ SLOW_SPEED_PXMS = 0.35  # finger speed (px/ms) up to which scrolling is 1:1
 FLICK_SPEED_PXMS = 3.0  # finger speed at which the full flick gain applies
 FLICK_GAIN = 3.5        # scroll distance per finger pixel on fast flicks
 
+# --- fling momentum (the "ice" glide after a quick flick) ---
+# On release the list keeps its scroll speed and bleeds it off smoothly
+# instead of hard-stopping. Touching the screen again grabs it at once.
+FLING_TICK_MS = 16           # momentum timer resolution
+FLING_FRICTION = 0.92        # share of the speed kept per tick (ice feel)
+FLING_MIN_START_PXMS = 0.3    # content speed at release needed to glide
+FLING_MAX_SPEED_PXMS = 12.0   # cap so a violent flick stays controllable
+FLING_STOP_PXMS = 0.05       # gliding ends under this speed
+FLING_HOLD_S = 0.12           # finger parked this long before lifting: no glide
+
 
 class TouchGestureHandler(QObject):
     """Application-wide gesture filter; owned by the main window."""
@@ -63,8 +74,9 @@ class TouchGestureHandler(QObject):
         self._scroll_view = None
         self._last_scroll_y = 0.0
         self._last_scroll_time = 0.0
-        self._scroll_speed = 0.0      # smoothed finger speed in px/ms
+        self._scroll_speed = 0.0      # smoothed finger speed in px/ms (signed)
         self._scroll_residual = 0.0   # sub-unit scroll kept for the next move
+        self._fling_stopped_by_press = False
         self._press_in_fullscreen = False
         self._press_in_idle = False
         self._block_clicks_until = 0.0
@@ -73,6 +85,15 @@ class TouchGestureHandler(QObject):
         self._hold_timer.setSingleShot(True)
         self._hold_timer.setInterval(HOLD_MS)
         self._hold_timer.timeout.connect(self._hold_timeout)
+
+        # Momentum after a flick: the list keeps gliding and bleeds off
+        # speed until it stops on its own or something is pressed again.
+        self._fling_timer = QTimer(self)
+        self._fling_timer.setInterval(FLING_TICK_MS)
+        self._fling_timer.timeout.connect(self._fling_step)
+        self._fling_view = None
+        self._fling_speed = 0.0    # content speed of the glide, px/ms
+        self._fling_residual = 0.0
 
         # The mouse event types this filter cares about. MouseButtonClick
         # (a coalesced click event) only exists on newer Qt; use it if there.
@@ -136,7 +157,7 @@ class TouchGestureHandler(QObject):
         1.0 while the finger is slow (exact 1:1 tracking), rising on a
         smooth curve to FLICK_GAIN for fast flicks.
         """
-        speed = self._scroll_speed
+        speed = abs(self._scroll_speed)
         if speed <= SLOW_SPEED_PXMS:
             return 1.0
         if speed >= FLICK_SPEED_PXMS:
@@ -144,16 +165,79 @@ class TouchGestureHandler(QObject):
         t = (speed - SLOW_SPEED_PXMS) / (FLICK_SPEED_PXMS - SLOW_SPEED_PXMS)
         return 1.0 + (FLICK_GAIN - 1.0) * t * t
 
-    def _scroll_step_px(self):
+    def _scroll_step_px(self, view):
         """Screen pixels one scrollbar unit is worth.
 
         Views that scroll per pixel count in pixels; per-item views
         count in rows, whose height makes one unit.
         """
-        if self._scroll_view.verticalScrollMode() == QAbstractItemView.ScrollMode.ScrollPerPixel:
+        if view.verticalScrollMode() == QAbstractItemView.ScrollMode.ScrollPerPixel:
             return 1.0
-        row_height = self._scroll_view.sizeHintForRow(0)
+        row_height = view.sizeHintForRow(0)
         return float(row_height) if row_height > 0 else 1.0
+
+    @staticmethod
+    def _is_touch_synthesized(event):
+        """True when the mouse event was made out of touch input.
+
+        Qt (or the window system) synthesizes mouse events for touchscreen
+        touches; a real mouse reports MouseEventNotSynthesized. The enum
+        lives on the value's own type in this PySide6 build.
+        """
+        source = event.source()
+        not_synthesized = getattr(type(source), "MouseEventNotSynthesized", None)
+        if not_synthesized is not None:
+            return source != not_synthesized
+        # Enum layouts without the member on the type: compare names.
+        return str(getattr(source, "name", "")) != "MouseEventNotSynthesized"
+
+    def _start_fling(self, now):
+        """Carry flick momentum over the release so the list glides."""
+        if not self._drag_scrolled or self._scroll_view is None:
+            return
+        if now - self._last_scroll_time > FLING_HOLD_S:
+            # The finger was parked before lifting: nothing to carry over.
+            return
+        speed = self._scroll_speed * self._scroll_gain()
+        if abs(speed) < FLING_MIN_START_PXMS:
+            return  # let go while slow: the list stops with the finger
+        if abs(speed) > FLING_MAX_SPEED_PXMS:
+            speed = FLING_MAX_SPEED_PXMS if speed > 0.0 else -FLING_MAX_SPEED_PXMS
+        self._fling_view = self._scroll_view
+        self._fling_speed = speed
+        self._fling_residual = 0.0
+        self._fling_timer.start()
+
+    def _fling_step(self):
+        """One momentum tick: scroll on, then bleed off speed (ice)."""
+        view = self._fling_view
+        if view is None:
+            self._stop_fling()
+            return
+        try:
+            bar = view.verticalScrollBar()
+            step_px = self._scroll_step_px(view)
+        except RuntimeError:
+            self._stop_fling()  # the view was destroyed mid-glide
+            return
+        self._fling_residual += self._fling_speed * FLING_TICK_MS / step_px
+        whole = int(self._fling_residual)
+        self._fling_residual -= whole
+        if whole:
+            before = bar.value()
+            bar.setValue(before - whole)
+            if bar.value() == before:
+                self._stop_fling()  # ran into the very top or bottom
+                return
+        self._fling_speed *= FLING_FRICTION
+        if abs(self._fling_speed) < FLING_STOP_PXMS:
+            self._stop_fling()
+
+    def _stop_fling(self):
+        self._fling_timer.stop()
+        self._fling_view = None
+        self._fling_speed = 0.0
+        self._fling_residual = 0.0
 
     # ---------- event filter ----------
 
@@ -188,6 +272,13 @@ class TouchGestureHandler(QObject):
     # ---------- gesture state machine ----------
 
     def _on_press(self, watched, event):
+        if self._fling_timer.isActive():
+            # Grabbing the gliding list stops it dead, and that press must
+            # not also act as a tap (no click, no fullscreen exit).
+            self._fling_stopped_by_press = True
+            self._stop_fling()
+        else:
+            self._fling_stopped_by_press = False
         if self._active:
             return False  # a second finger: ignore
 
@@ -258,7 +349,8 @@ class TouchGestureHandler(QObject):
                 elapsed_ms = (now - self._last_scroll_time) * 1000.0
                 self._last_scroll_time = now
                 if elapsed_ms > 1.0 and delta_y != 0.0:
-                    instant = abs(delta_y) / elapsed_ms
+                    # Signed speed: its sign gives the fling direction.
+                    instant = delta_y / elapsed_ms
                     self._scroll_speed += (instant - self._scroll_speed) * 0.4
 
                 # A scrollbar unit is a pixel or a whole row depending on
@@ -266,7 +358,7 @@ class TouchGestureHandler(QObject):
                 # whole unit is kept and applied on the next move so slow
                 # drags are never lost to rounding.
                 self._scroll_residual += (
-                    delta_y * self._scroll_gain() / self._scroll_step_px()
+                    delta_y * self._scroll_gain() / self._scroll_step_px(self._scroll_view)
                 )
                 whole = int(self._scroll_residual)
                 self._scroll_residual -= whole
@@ -284,9 +376,14 @@ class TouchGestureHandler(QObject):
         if not self._active:
             return False
 
-        was_gesture = self._hold_fired or self._drag_scrolled
+        was_gesture = (
+            self._hold_fired or self._drag_scrolled or self._fling_stopped_by_press
+        )
         if was_gesture:
             self._block_clicks_until = time.monotonic() + CLICK_BLOCK_MS / 1000.0
+
+        # A quick flick keeps its momentum and glides on after the lift.
+        self._start_fling(time.monotonic())
 
         press_widget = self._press_widget
         in_fullscreen = self._press_in_fullscreen
@@ -299,6 +396,10 @@ class TouchGestureHandler(QObject):
                 if press_in_idle:
                     # This tap only woke the controls up (the fullscreen
                     # view handles that itself on any press).
+                    pass
+                elif self._is_touch_synthesized(event):
+                    # A touchscreen tap never exits fullscreen — like a
+                    # mouse click it only wakes the idle view up.
                     pass
                 elif not self._is_interactive(press_widget):
                     fullscreen.close()
@@ -332,6 +433,7 @@ class TouchGestureHandler(QObject):
         self._last_scroll_time = 0.0
         self._scroll_speed = 0.0
         self._scroll_residual = 0.0
+        self._fling_stopped_by_press = False
         self._press_in_fullscreen = False
         self._press_in_idle = False
         self._hold_timer.stop()
