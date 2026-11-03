@@ -50,12 +50,16 @@ FLICK_GAIN = 3.5        # scroll distance per finger pixel on fast flicks
 # --- fling momentum (the "ice" glide after a quick flick) ---
 # On release the list keeps its scroll speed and bleeds it off smoothly
 # instead of hard-stopping. Touching the screen again grabs it at once.
-FLING_TICK_MS = 16           # momentum timer resolution
-FLING_FRICTION = 0.92        # share of the speed kept per tick (ice feel)
+# Every tick steps by the real time that passed since the last one, so
+# event-loop jitter never turns the glide into stutter.
+FLING_TICK_MS = 16           # reference tick for the friction curve (ms)
+FLING_FRICTION = 0.92        # share of the speed kept per reference tick
 FLING_MIN_START_PXMS = 0.3    # content speed at release needed to glide
-FLING_MAX_SPEED_PXMS = 12.0   # cap so a violent flick stays controllable
+FLING_MAX_SPEED_PXMS = 12.0  # cap so a violent flick stays controllable
 FLING_STOP_PXMS = 0.05       # gliding ends under this speed
-FLING_HOLD_S = 0.12           # finger parked this long before lifting: no glide
+FLING_HOLD_S = 0.12          # finger parked this long before lifting: no glide
+FLING_MAX_DT_MS = 100.0      # after a long stall: one sane catch-up hop only
+FLING_GRAB_SWALLOW_PXMS = 0.4  # grabbing a faster glide still swallows the tap
 
 
 class TouchGestureHandler(QObject):
@@ -93,6 +97,7 @@ class TouchGestureHandler(QObject):
         self._fling_timer.timeout.connect(self._fling_step)
         self._fling_view = None
         self._fling_speed = 0.0    # content speed of the glide, px/ms
+        self._fling_last_time = 0.0  # clock reading of the last glide tick
         self._fling_residual = 0.0
 
         # The mouse event types this filter cares about. MouseButtonClick
@@ -103,11 +108,9 @@ class TouchGestureHandler(QObject):
             QEvent.Type.MouseButtonRelease,
             QEvent.Type.MouseButtonDblClick,
         }
-        self._click_types = {QEvent.Type.MouseButtonDblClick}
-        click_type = getattr(QEvent.Type, "MouseButtonClick", None)
-        if click_type is not None:
-            self._watched_types.add(click_type)
-            self._click_types.add(click_type)
+        self._coalesced_click_type = getattr(QEvent.Type, "MouseButtonClick", None)
+        if self._coalesced_click_type is not None:
+            self._watched_types.add(self._coalesced_click_type)
 
     # ---------- helpers ----------
 
@@ -206,21 +209,36 @@ class TouchGestureHandler(QObject):
         self._fling_view = self._scroll_view
         self._fling_speed = speed
         self._fling_residual = 0.0
+        self._fling_last_time = now
         self._fling_timer.start()
 
     def _fling_step(self):
-        """One momentum tick: scroll on, then bleed off speed (ice)."""
+        """One momentum tick: scroll on, then bleed off speed (ice).
+
+        The scroll amount follows the real time since the last tick, so
+        late timer ticks (busy main thread) never slow the glide into a
+        stutter; the friction curve is scaled by the same elapsed time.
+        """
         view = self._fling_view
         if view is None:
             self._stop_fling()
             return
+        now = time.monotonic()
+        elapsed_ms = (now - self._fling_last_time) * 1000.0
+        self._fling_last_time = now
+        if elapsed_ms <= 0.0:
+            return  # called twice within the clock resolution
+        if elapsed_ms > FLING_MAX_DT_MS:
+            # The event loop stalled (window drag, heavy paint): catch up
+            # one sane hop, do not lurch.
+            elapsed_ms = FLING_MAX_DT_MS
         try:
             bar = view.verticalScrollBar()
             step_px = self._scroll_step_px(view)
         except RuntimeError:
             self._stop_fling()  # the view was destroyed mid-glide
             return
-        self._fling_residual += self._fling_speed * FLING_TICK_MS / step_px
+        self._fling_residual += self._fling_speed * elapsed_ms / step_px
         whole = int(self._fling_residual)
         self._fling_residual -= whole
         if whole:
@@ -229,7 +247,7 @@ class TouchGestureHandler(QObject):
             if bar.value() == before:
                 self._stop_fling()  # ran into the very top or bottom
                 return
-        self._fling_speed *= FLING_FRICTION
+        self._fling_speed *= FLING_FRICTION ** (elapsed_ms / FLING_TICK_MS)
         if abs(self._fling_speed) < FLING_STOP_PXMS:
             self._stop_fling()
 
@@ -237,6 +255,7 @@ class TouchGestureHandler(QObject):
         self._fling_timer.stop()
         self._fling_view = None
         self._fling_speed = 0.0
+        self._fling_last_time = 0.0
         self._fling_residual = 0.0
 
     # ---------- event filter ----------
@@ -248,7 +267,21 @@ class TouchGestureHandler(QObject):
         if not isinstance(watched, QWidget):
             return False
 
-        if event_type in self._click_types:
+        if event_type == QEvent.Type.MouseButtonDblClick:
+            if event.button() != Qt.MouseButton.LeftButton:
+                return False
+            # Qt folds a quick second press into a double-click event
+            # instead of delivering a fresh press of its own. Track it as
+            # the press it really is, so rapid tap-tap and tap-then-swipe
+            # sequences keep working. While a hold/drag click-block runs,
+            # the event is also kept from the widgets; this same touch's
+            # release handles the rest.
+            self._on_press(watched, event)
+            return self._blocked_now()
+        if (
+            self._coalesced_click_type is not None
+            and event_type == self._coalesced_click_type
+        ):
             # Swallow the leftover click of a hold/drag so a gesture never
             # also activates whatever was under the finger.
             return self._blocked_now()
@@ -273,9 +306,12 @@ class TouchGestureHandler(QObject):
 
     def _on_press(self, watched, event):
         if self._fling_timer.isActive():
-            # Grabbing the gliding list stops it dead, and that press must
-            # not also act as a tap (no click, no fullscreen exit).
-            self._fling_stopped_by_press = True
+            # Grabbing the gliding list stops it dead. Only a tap that
+            # grabbed a still-lively glide counts as a gesture afterwards;
+            # when the glide had nearly died, the tap registers normally.
+            self._fling_stopped_by_press = (
+                abs(self._fling_speed) >= FLING_GRAB_SWALLOW_PXMS
+            )
             self._stop_fling()
         else:
             self._fling_stopped_by_press = False
