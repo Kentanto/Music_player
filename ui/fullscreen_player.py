@@ -9,13 +9,13 @@ from PySide6.QtWidgets import (
     QStackedLayout,
     QGraphicsOpacityEffect,
     QApplication,
-    QStyle,
 )
 from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QTimer, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap, QRegion, QIcon
 
 from .clickable_slider import FocusAwareSlider
 from .eq_visualizer import EQVisualizer
+from .drawn_icons import next_icon, pause_icon, play_icon, prev_icon, shuffle_icon
 
 
 class EQProgressBadge(QWidget):
@@ -47,6 +47,7 @@ class FullscreenPlayer(QWidget):
     play_pause_clicked = Signal()
     next_clicked = Signal()
     prev_clicked = Signal()
+    shuffle_toggled = Signal(bool)
     volume_changed = Signal(int)
     seek_requested = Signal(float)
 
@@ -70,21 +71,6 @@ class FullscreenPlayer(QWidget):
         self.setMouseTracking(True)
         self._init_ui()
 
-    def _white_icon(self, standard_icon):
-        pixmap = standard_icon.pixmap(QSize(24, 24))
-
-        white_pixmap = QPixmap(pixmap.size())
-        white_pixmap.fill(Qt.transparent)
-
-        painter = QPainter(white_pixmap)
-        painter.setCompositionMode(QPainter.CompositionMode_Source)
-        painter.fillRect(white_pixmap.rect(), Qt.white)
-        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.end()
-
-        return QIcon(white_pixmap)
-
     def _init_ui(self):
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -100,6 +86,10 @@ class FullscreenPlayer(QWidget):
         info_panel.setObjectName("fullscreenInfoPanel")
         info_panel.setMinimumHeight(300)
         info_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # The whole bottom panel is a click/touch "safe area": presses inside
+        # it never exit fullscreen (see in_click_safe_area), so users can aim
+        # at the transport buttons without risking an accidental close.
+        self._info_panel = info_panel
         info_layout = QVBoxLayout(info_panel)
         info_layout.setContentsMargins(28, 42, 28, 22)
         info_layout.setSpacing(10)
@@ -172,13 +162,7 @@ class FullscreenPlayer(QWidget):
         self.prev_button.setObjectName("fullscreenControl")
         self.prev_button.setToolTip("Previous track")
         self.prev_button.setIconSize(QSize(24, 24))
-        self.prev_button.setIcon(
-            self._white_icon(
-                self.style().standardIcon(
-                    QStyle.StandardPixmap.SP_MediaSkipBackward
-                )
-            )
-        )
+        self.prev_button.setIcon(QIcon(prev_icon(24, "#f2f2f2")))
         self.prev_button.clicked.connect(self.prev_clicked.emit)
         transport_controls.addWidget(self.prev_button)
 
@@ -194,16 +178,20 @@ class FullscreenPlayer(QWidget):
         self.next_button.setObjectName("fullscreenControl")
         self.next_button.setToolTip("Next track")
         self.next_button.setIconSize(QSize(24, 24))
-        self.next_button.setIcon(
-            self._white_icon(
-                self.style().standardIcon(
-                    QStyle.StandardPixmap.SP_MediaSkipForward
-                )
-            )
-        )
+        self.next_button.setIcon(QIcon(next_icon(24, "#f2f2f2")))
         self.next_button.clicked.connect(self.next_clicked.emit)
         transport_controls.addWidget(self.next_button)
-        
+
+        self.shuffle_button = QPushButton()
+        self.shuffle_button.setObjectName("fullscreenControl")
+        self.shuffle_button.setToolTip("Shuffle")
+        self.shuffle_button.setCheckable(True)
+        self.shuffle_button.setIconSize(QSize(24, 24))
+        self._shuffle_enabled = False
+        self._update_shuffle_icon()
+        self.shuffle_button.toggled.connect(self._on_shuffle_toggled)
+        transport_controls.addWidget(self.shuffle_button)
+
         controls.addLayout(transport_controls, 0, 0, Qt.AlignCenter)
         self.eq_visualizer = EQVisualizer()
         self.eq_visualizer.setMinimumWidth(0)
@@ -261,12 +249,39 @@ class FullscreenPlayer(QWidget):
 
     def set_play_pause_state(self, playing):
         self._is_playing = bool(playing)
-        icon = (
-            QStyle.StandardPixmap.SP_MediaPause
-            if self._is_playing
-            else QStyle.StandardPixmap.SP_MediaPlay
+        icon = pause_icon(24, "#101010") if self._is_playing else play_icon(24, "#101010")
+        self.play_pause_button.setIcon(QIcon(icon))
+
+    def set_shuffle_state(self, enabled):
+        """Mirror the player's shuffle state without re-emitting toggled."""
+        self._shuffle_enabled = bool(enabled)
+        self.shuffle_button.blockSignals(True)
+        self.shuffle_button.setChecked(self._shuffle_enabled)
+        self.shuffle_button.blockSignals(False)
+        self._update_shuffle_icon()
+
+    def _on_shuffle_toggled(self, checked):
+        self._shuffle_enabled = bool(checked)
+        self._update_shuffle_icon()
+        self.shuffle_toggled.emit(self._shuffle_enabled)
+
+    def _update_shuffle_icon(self):
+        # Checked state paints the button green, so the symbol goes dark.
+        color = "#101010" if self._shuffle_enabled else "#f2f2f2"
+        self.shuffle_button.setIcon(QIcon(shuffle_icon(24, color)))
+
+    def in_click_safe_area(self, widget):
+        """True inside the bottom controls area — the touch/click safe zone.
+
+        Presses here must never exit fullscreen, so touch users can aim at
+        the transport buttons freely without risking an accidental close.
+        """
+        panel = getattr(self, "_info_panel", None)
+        if panel is None or widget is None:
+            return False
+        return widget is panel or (
+            isinstance(widget, QWidget) and panel.isAncestorOf(widget)
         )
-        self.play_pause_button.setIcon(self.style().standardIcon(icon))
 
     def set_volume(self, value):
         self.volume_slider.blockSignals(True)
@@ -310,6 +325,7 @@ class FullscreenPlayer(QWidget):
             self.prev_button,
             self.play_pause_button,
             self.next_button,
+            self.shuffle_button,
             self.seek_slider,
             self.eq_seek_slider,
         ]

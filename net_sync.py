@@ -9,9 +9,14 @@ Every instance with Network Sync enabled:
 - accepts a connection only after the other side identifies itself with a
   hello handshake, so only real Music Engine instances sync up,
 - exchanges small JSON commands (play / pause / resume / seek / stop plus a
-  periodic state heartbeat) so either instance can trigger the other, and a
+  periodic state heartbeat) so either instance can trigger the other, a
   "finished" handshake at the end of each track so synced machines play every
-  song to the end before moving on together.
+  song to the end before moving on together, and "shuffle" / "queue_next"
+  commands so turning shuffle on/off (with the exact seed and base queue, so
+  every machine rebuilds the identical order) and queueing a song as next
+  happen on all machines at once. "play" broadcasts also carry the sender's
+  full play order so machines whose queues drifted apart reconverge at every
+  track change.
 
 The engine runs on its own thread and talks to the controller through Qt
 signals, so playback stays synced while the window is unfocused.
@@ -578,7 +583,17 @@ class _SyncThread(QThread):
             return
         if not conn.hello_received:
             return  # only hello is accepted before the handshake completes
-        if kind in ("play", "pause", "resume", "seek", "stop", "state", "finished"):
+        if kind in (
+            "play",
+            "pause",
+            "resume",
+            "seek",
+            "stop",
+            "state",
+            "finished",
+            "shuffle",
+            "queue_next",
+        ):
             self._engine.remote_command.emit(kind, message)
 
     def _handle_hello(self, conn, message):

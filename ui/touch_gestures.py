@@ -11,7 +11,8 @@ without changing how a mouse behaves:
   the speed bleeds off or the screen is touched again,
 - inside the fullscreen view: a press while the idle EQ view is showing
   only wakes the controls back up, and a touchscreen tap never exits
-  fullscreen; only a real mouse click on empty space still does.
+  fullscreen; only a real mouse click on empty space still does, and the
+  bottom controls area is a safe zone that never exits fullscreen either.
 
 Qt synthesizes mouse events from touch input for widgets that do not handle
 touch themselves, so this filter only looks at mouse events and works on
@@ -436,7 +437,7 @@ class TouchGestureHandler(QObject):
                     # A touchscreen tap never exits fullscreen — like a
                     # mouse click it only wakes the idle view up.
                     pass
-                elif not self._is_interactive(press_widget):
+                elif not self._is_interactive(press_widget) and not fullscreen.in_click_safe_area(press_widget):
                     fullscreen.close()
 
         return was_gesture

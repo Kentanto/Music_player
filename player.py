@@ -253,7 +253,77 @@ class Player:
             self._current_item = self.queue[self.index] if 0 <= self.index < len(self.queue) else None
             self._restore_next_sources()
 
-    def _apply_shuffle(self, current_item=None, preserve_existing=False):
+    def apply_synced_shuffle(self, enabled, seed, base_queue, current_item=None, next_sources=None):
+        """Adopt shuffle state broadcast by a synced-up peer.
+
+        The peer sends its exact seed plus the base queue it shuffled, so
+        both machines reconstruct the exact same randomized order and
+        continue through the same upcoming tracks. Sources arrive already
+        mapped to this machine (local file paths or stream URLs).
+        """
+        self._base_queue = [u for u in (base_queue or []) if u]
+        self._next_sources = [
+            s for s in (next_sources or []) if s and s in self._base_queue
+        ]
+        try:
+            self._shuffle_seed = int(seed)
+        except (TypeError, ValueError):
+            self._shuffle_seed = None
+        self.shuffle_enabled = bool(enabled)
+
+        if not self._base_queue:
+            self.queue = []
+            self.index = -1
+            self._current_item = None
+            return
+
+        if self.shuffle_enabled:
+            self._apply_shuffle(
+                current_item=current_item or self._current_item,
+                keep_seed=True,
+            )
+            self._restore_next_sources()
+        else:
+            self._shuffle_order = []
+            self._ordered_queue = list(self._base_queue)
+            self.queue = list(self._base_queue)
+            if current_item in self.queue:
+                self.index = self.queue.index(current_item)
+            else:
+                self.index = 0
+            self._current_item = self.queue[self.index] if self.queue else None
+            self._restore_next_sources()
+
+    def adopt_synced_queue(self, sources, index, next_sources=None):
+        """Adopt a synced-up peer's exact play order (sources already local
+        to this machine), so Next / autoplay follow the same tracks on both
+        machines even when their queues had drifted apart."""
+        self.queue = [s for s in (sources or []) if s]
+        if not self.queue:
+            return
+        try:
+            self.index = int(index)
+        except (TypeError, ValueError):
+            self.index = 0
+        if not 0 <= self.index < len(self.queue):
+            self.index = 0
+        self._current_item = self.queue[self.index]
+
+        # First-seen order of the adopted queue keeps the base queue sane
+        # for later local shuffle / sort changes.
+        base = []
+        for source in self.queue:
+            if source not in base:
+                base.append(source)
+        self._base_queue = base
+        self._next_sources = [s for s in (next_sources or []) if s in base]
+        if self.shuffle_enabled:
+            self._shuffle_order = list(self.queue)
+        else:
+            self._ordered_queue = list(self.queue)
+        self._restore_next_sources()
+
+    def _apply_shuffle(self, current_item=None, preserve_existing=False, keep_seed=False):
         if not self._base_queue:
             self.queue = []
             self.index = -1
@@ -283,7 +353,12 @@ class Player:
 
         # Need a new shuffle — use a stored seed so the same base
         # queue stays in the same randomized order across set_queue calls.
-        if not preserve_existing or self._shuffle_seed is None:
+        # keep_seed reuses the stored seed as-is (synced machines apply the
+        # peer's seed this way so both reconstruct the identical order).
+        if keep_seed:
+            if self._shuffle_seed is None:
+                self._shuffle_seed = random.randint(0, 2 ** 31 - 1)
+        elif not preserve_existing or self._shuffle_seed is None:
             self._shuffle_seed = random.randint(0, 2 ** 31 - 1)
 
         rng = random.Random(self._shuffle_seed)

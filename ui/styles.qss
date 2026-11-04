@@ -231,6 +231,38 @@ QSplitter::handle {
     background-color: #282828;
 }
 
+/* Context menus — tall rows and a big font so every entry is an easy
+   touch target on the touch panel (and comfortable with a mouse too). */
+QMenu {
+    background-color: #1e1e1e;
+    border: 1px solid #404040;
+    border-radius: 6px;
+    padding: 6px;
+}
+
+QMenu::item {
+    background-color: transparent;
+    color: #ffffff;
+    padding: 12px 32px 12px 24px;
+    font-size: 15px;
+    border-radius: 4px;
+}
+
+QMenu::item:selected {
+    background-color: #1db954;
+    color: #ffffff;
+}
+
+QMenu::item:disabled {
+    color: #707070;
+}
+
+QMenu::separator {
+    height: 1px;
+    background-color: #404040;
+    margin: 6px 8px;
+}
+
 /* Fullscreen player */
 QWidget#fullscreenInfoPanel {
     background-color: transparent;
@@ -309,6 +341,30 @@ QPushButton#fullscreenControl:focus {
 QPushButton#fullscreenControl:pressed {
     background-color: #1b1b1b;
     border-color: #1db954;
+}
+
+/* The checkable shuffle button in fullscreen: green while shuffle is on.
+   The :focus / remoteHighlight rules below keep the green "on" state visible
+   even when the button is highlighted by remote navigation. */
+QPushButton#fullscreenControl:checked {
+    background-color: #1db954;
+    border-color: #1ed760;
+}
+
+QPushButton#fullscreenControl:checked:hover {
+    background-color: #35c96a;
+    border-color: #75e39a;
+}
+
+QWidget#fullscreenInfoPanel QPushButton#fullscreenControl:checked,
+QWidget#fullscreenInfoPanel QPushButton#fullscreenControl:checked:focus {
+    background-color: #1db954;
+    border: 1px solid #1ed760;
+}
+
+QPushButton#fullscreenControl:checked[remoteHighlight="true"] {
+    background-color: #1db954;
+    border: 1px solid #1ed760;
 }
 
 QPushButton#fullscreenPlayControl {

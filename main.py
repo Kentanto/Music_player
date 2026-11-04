@@ -131,6 +131,9 @@ class MusicAppController:
         self._sync_pending_advance = None   # end-of-track transition held for a peer
         self._sync_last_join_attempt = 0.0  # rate limit for joining a playing peer
         self._sync_dialog_refresh = None    # status refresh callback while open
+        # source -> {file, url} identity pairs for sync broadcasts (the URL
+        # for a file never changes, so one lookup per song is enough)
+        self._sync_identity_cache = {}
         self._sync_state_timer = QTimer(self.window)
         self._sync_state_timer.setInterval(1000)
         self._sync_state_timer.timeout.connect(self._sync_send_state)
@@ -155,10 +158,7 @@ class MusicAppController:
 
         saved_shuffle = get_app_setting("shuffle_enabled", "False")
         self.player.shuffle_enabled = saved_shuffle.lower() == "true"
-        self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
-        self.window.queue_panel.set_sort_mode(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=True
-        )
+        self._publish_shuffle_state(self.player.shuffle_enabled)
         
         # Restore the last playlist or show playlists first
         self._restore_last_view()
@@ -238,6 +238,7 @@ class MusicAppController:
         fullscreen.play_pause_clicked.connect(self.handle_play_pause)
         fullscreen.next_clicked.connect(self.handle_next)
         fullscreen.prev_clicked.connect(self.handle_prev)
+        fullscreen.shuffle_toggled.connect(self.handle_shuffle_toggle)
         fullscreen.volume_changed.connect(self.handle_volume_change)
 
         self.cec_remote = CecRemoteListener(self.window)
@@ -324,7 +325,9 @@ class MusicAppController:
         """
         played = self._play_item(item)
         if played:
-            self._sync_send("play", self._sync_track_info(self.player.get_position()))
+            payload = self._sync_play_payload(self.player.get_position())
+            if payload:
+                self._sync_send("play", payload)
 
     def _play_item(self, item):
         """Play a track and return its source, or None when nothing played."""
@@ -426,7 +429,11 @@ class MusicAppController:
         self._sync_after_track_change(before)
     
     def handle_queue_next(self, item):
-        """Insert the selected item as the next track in the current queue."""
+        """Insert the selected item as the next track in the current queue.
+
+        Broadcast to synced-up peers so the song lands in every machine's
+        queue, keeping "what plays next" identical everywhere.
+        """
         if not item or item.get("type") == "playlist":
             return
 
@@ -437,6 +444,11 @@ class MusicAppController:
         self.player.queue_next(source)
         self.active_queue_urls = list(self.player.queue)
         self._refresh_queue_display()
+
+        payload = self._sync_source_identity(source)
+        payload["title"] = item.get("title")
+        payload["artist"] = item.get("artist")
+        self._sync_send("queue_next", payload)
     
     def handle_next_autoplay(self):
         """Auto-play the next track when the current one finishes.
@@ -588,15 +600,49 @@ class MusicAppController:
             return self.player._playing_item
         return None
 
+    def _publish_shuffle_state(self, enabled):
+        """Mirror the shuffle state everywhere: bars, fullscreen, sort mode,
+        MPRIS and the saved setting."""
+        enabled = bool(enabled)
+        self.window.player_bar.set_shuffle_state(enabled)
+        self.window.fullscreen_player.set_shuffle_state(enabled)
+        self.window.queue_panel.set_sort_mode(
+            "Shuffled" if enabled else "Date Added", reverse=True
+        )
+        set_app_setting("shuffle_enabled", str(enabled))
+        if self.mpris:
+            self.mpris.set_shuffle(enabled)
+
+    def _sync_send_shuffle_state(self):
+        """Broadcast the local shuffle state: the on/off flag, the exact seed
+        it was shuffled with, the base queue and the queued-next sources.
+
+        A synced-up machine that adopts all of that rebuilds byte-for-byte
+        the same randomized order, so every machine plays the same upcoming
+        tracks instead of drifting apart."""
+        if not self.sync:
+            return
+        self._sync_send(
+            "shuffle",
+            {
+                "enabled": self.player.shuffle_enabled,
+                "seed": self.player._shuffle_seed,
+                "current": self._sync_source_identity(self.player._current_item),
+                "queue": [
+                    self._sync_source_identity(u) for u in (self.player._base_queue or [])
+                ],
+                "next_sources": [
+                    self._sync_source_identity(u) for u in (self.player._next_sources or [])
+                ],
+            },
+        )
+
     def handle_shuffle_toggle(self, enabled):
         queue_urls = self.active_queue_urls or self.player._base_queue
         if not queue_urls:
             self.player.shuffle_enabled = False
-            self.window.player_bar.set_shuffle_state(False)
-            self.window.queue_panel.set_sort_mode("Date Added", reverse=True)
-            set_app_setting("shuffle_enabled", "False")
-            if self.mpris:
-                self.mpris.set_shuffle(False)
+            self._publish_shuffle_state(False)
+            self._sync_send("shuffle", {"enabled": False})
             return
 
         current_item = self.player._current_item
@@ -606,15 +652,10 @@ class MusicAppController:
 
         self.player.set_queue(queue_urls, current_item=current_item)
         self.player.toggle_shuffle(enabled)
-        self.window.player_bar.set_shuffle_state(self.player.shuffle_enabled)
-        self.window.queue_panel.set_sort_mode(
-            "Shuffled" if self.player.shuffle_enabled else "Date Added", reverse=True
-        )
-        set_app_setting("shuffle_enabled", str(bool(self.player.shuffle_enabled)))
+        self._publish_shuffle_state(self.player.shuffle_enabled)
         self.active_queue_urls = list(queue_urls)
         self._refresh_queue_display()
-        if self.mpris:
-            self.mpris.set_shuffle(self.player.shuffle_enabled)
+        self._sync_send_shuffle_state()
     
     def handle_load_playlists(self):
         """Load playlist list for browsing. Appends a synthetic \"All Songs\" playlist."""
@@ -1376,10 +1417,17 @@ class MusicAppController:
         self.sync.send_command(command, payload or {})
 
     def _sync_after_track_change(self, before):
-        """After next/prev/autoplay: tell peers what is playing now."""
+        """After next/prev/autoplay: tell peers what is playing now.
+
+        The broadcast carries the full play order too, so a machine whose
+        queue had drifted apart re-adopts ours and both stay on the same
+        upcoming tracks.
+        """
         after = self._playing_source()
         if after and after != before:
-            self._sync_send("play", self._sync_track_info(self.player.get_position()))
+            payload = self._sync_play_payload(self.player.get_position())
+            if payload:
+                self._sync_send("play", payload)
 
     def _sync_track_info(self, position_ms):
         """Describe what is playing right now, for a sync broadcast.
@@ -1434,6 +1482,172 @@ class MusicAppController:
             "artist": artist,
             "position_ms": int(position_ms or 0),
         }
+
+    def _sync_item_pools(self):
+        """Every item dict that might describe a queued track."""
+        pools = []
+        panel = self.window.queue_panel
+        if getattr(panel, "items_data", None):
+            pools.extend(panel.items_data)
+        if getattr(panel, "master_items", None):
+            pools.extend(panel.master_items)
+        pools.extend(self.current_results)
+        return pools
+
+    def _sync_source_identity(self, source, item_by_source=None):
+        """{file, url} identity of a queue source, portable across machines.
+
+        The file path is stored in its portable form so it points at the
+        right file on every machine; the URL lets machines without the file
+        stream the track instead of dropping it from the queue.
+        """
+        pair = {"file": None, "url": None}
+        if not source:
+            return pair
+        cached = self._sync_identity_cache.get(source)
+        if cached is not None:
+            return dict(cached)
+        if str(source).startswith("http"):
+            pair["url"] = source
+        else:
+            pair["file"] = to_portable_path(str(source))
+            item = None
+            if item_by_source is not None:
+                item = item_by_source.get(source)
+            else:
+                for candidate in self._sync_item_pools():
+                    if isinstance(candidate, dict) and source in (
+                        candidate.get("file_path"), candidate.get("url")
+                    ):
+                        item = candidate
+                        break
+            url = item.get("url") if isinstance(item, dict) else None
+            if not url:
+                try:
+                    url = get_track_metadata(str(source)).get("url")
+                except Exception:
+                    url = None
+            pair["url"] = url or None
+        self._sync_identity_cache[source] = dict(pair)
+        return dict(pair)
+
+    def _sync_source_from_identity(self, pair):
+        """Map a peer's {file, url} identity to a source playable here:
+        our local copy of the file, or the stream URL as a fallback."""
+        if not isinstance(pair, dict):
+            return None
+        file_rel = pair.get("file")
+        url = pair.get("url")
+        if file_rel:
+            file_path = resolve_stored_path(file_rel)
+            if file_path and Path(file_path).exists():
+                return file_path
+        if url:
+            return url
+        return None
+
+    def _sync_queue_payload(self):
+        """The full play order plus the queue position, for broadcasts.
+
+        Sent along with every "play" so a synced-up machine that adopts the
+        broadcast ends up with the exact same upcoming tracks as the sender,
+        even if the two queues had drifted apart before."""
+        item_by_source = {}
+        for item in self._sync_item_pools():
+            if not isinstance(item, dict):
+                continue
+            source = item.get("file_path") or item.get("url")
+            if source and source not in item_by_source:
+                item_by_source[source] = item
+        queue = [
+            self._sync_source_identity(u, item_by_source)
+            for u in (self.player.queue or [])
+        ]
+        next_sources = [
+            self._sync_source_identity(u, item_by_source)
+            for u in (self.player._next_sources or [])
+        ]
+        return {
+            "queue": queue,
+            "queue_index": self.player.index,
+            "next_sources": next_sources,
+        }
+
+    def _sync_play_payload(self, position_ms):
+        """Track info plus the full play order, in one broadcast."""
+        info = self._sync_track_info(position_ms)
+        if not info:
+            return None
+        info.update(self._sync_queue_payload())
+        return info
+
+    def _sync_adopt_queue_payload(self, payload):
+        """Replace our play order with a peer's (carried by play broadcasts).
+
+        Returns True when the order was adopted. Songs this machine cannot
+        map (file missing here and no stream URL) are skipped.
+        """
+        pairs = payload.get("queue")
+        if not isinstance(pairs, list) or not pairs:
+            return False
+        sources = [self._sync_source_from_identity(p) for p in pairs]
+        sources = [s for s in sources if s]
+        if not sources:
+            return False
+        next_sources = [
+            self._sync_source_from_identity(p)
+            for p in (payload.get("next_sources") or [])
+        ]
+        next_sources = [s for s in next_sources if s]
+        try:
+            index = int(payload.get("queue_index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        self.player.adopt_synced_queue(sources, index, next_sources)
+        self.active_queue_urls = list(self.player.queue)
+        self._refresh_queue_display()
+        return True
+
+    def _sync_apply_shuffle(self, payload):
+        """Adopt a peer's shuffle toggle: same on/off state, same seed, same
+        base queue — therefore the exact same upcoming order here."""
+        enabled = bool(payload.get("enabled"))
+        sources = []
+        pairs = payload.get("queue")
+        if isinstance(pairs, list):
+            sources = [self._sync_source_from_identity(p) for p in pairs]
+            sources = [s for s in sources if s]
+        if not sources:
+            # No queue context came along — just mirror the on/off flag.
+            if self.player.shuffle_enabled != enabled:
+                self.player.toggle_shuffle(enabled)
+            self._publish_shuffle_state(self.player.shuffle_enabled)
+            return
+        current = self._sync_source_from_identity(payload.get("current"))
+        next_sources = [
+            self._sync_source_from_identity(p)
+            for p in (payload.get("next_sources") or [])
+        ]
+        next_sources = [s for s in next_sources if s]
+        self.player.apply_synced_shuffle(
+            enabled,
+            payload.get("seed"),
+            sources,
+            current_item=current,
+            next_sources=next_sources,
+        )
+        self.active_queue_urls = list(self.player.queue)
+        self._publish_shuffle_state(self.player.shuffle_enabled)
+        self._refresh_queue_display()
+
+    def _sync_apply_queue_next(self, payload):
+        """Insert a track a peer queued as its next one right after ours."""
+        source = self._sync_source_from_identity(payload)
+        if not source:
+            return
+        self.player.queue_next(source)
+        self.active_queue_urls = list(self.player.queue)
+        self._refresh_queue_display()
 
     def _sync_send_state(self):
         """Periodically tell peers what is playing (every machine, both sides).
@@ -1537,6 +1751,10 @@ class MusicAppController:
             elif command == "stop":
                 self.player.stop()
                 self._sync_leader_state = None
+            elif command == "shuffle":
+                self._sync_apply_shuffle(payload)
+            elif command == "queue_next":
+                self._sync_apply_queue_next(payload)
 
     def _sync_apply_play(self, payload):
         """Start the track a peer is playing.
@@ -1563,6 +1781,11 @@ class MusicAppController:
                 duration_ms=5000,
             )
             return
+
+        # Adopt the peer's full play order when it came along, so both
+        # machines advance through the same upcoming tracks from here on —
+        # even if this queue had something else lined up before.
+        self._sync_adopt_queue_payload(payload)
 
         # Already playing this exact track: both machines advance themselves
         # at a track's end and then tell each other, so this broadcast must

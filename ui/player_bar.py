@@ -1,9 +1,11 @@
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QPushButton, QLabel, QVBoxLayout
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
 
 from .clickable_slider import FocusAwareSlider
+from .drawn_icons import next_icon, pause_icon, play_icon, prev_icon, shuffle_icon
 
 
 class PlayerBar(QWidget):
@@ -49,17 +51,24 @@ class PlayerBar(QWidget):
         self.controls_layout = controls_layout
         
         # Previous button
-        self.prev_btn = QPushButton("⏮ Prev")
+        self.prev_btn = QPushButton("Prev")
+        self.prev_btn.setIconSize(QSize(18, 18))
+        self.prev_btn.setIcon(QIcon(prev_icon(18, "#ffffff")))
         self.prev_btn.clicked.connect(self.prev_clicked.emit)
         controls_layout.addWidget(self.prev_btn)
-        
+
         # Play/pause toggle button
-        self.play_pause_btn = QPushButton("▶ Play")
+        self.play_pause_btn = QPushButton("Play")
+        self.play_pause_btn.setIconSize(QSize(18, 18))
+        self._playing = False
+        self._update_play_pause_icon()
         self.play_pause_btn.clicked.connect(self.play_pause_clicked.emit)
         controls_layout.addWidget(self.play_pause_btn)
-        
+
         # Next button
-        self.next_btn = QPushButton("Next ⏭")
+        self.next_btn = QPushButton("Next")
+        self.next_btn.setIconSize(QSize(18, 18))
+        self.next_btn.setIcon(QIcon(next_icon(18, "#ffffff")))
         self.next_btn.clicked.connect(self.next_clicked.emit)
         controls_layout.addWidget(self.next_btn)
 
@@ -67,7 +76,9 @@ class PlayerBar(QWidget):
         self.fullscreen_btn.clicked.connect(self.fullscreen_requested.emit)
         controls_layout.addWidget(self.fullscreen_btn)
 
-        self.shuffle_btn = QPushButton("🔀 Shuffle")
+        self.shuffle_btn = QPushButton("Shuffle")
+        self.shuffle_btn.setIconSize(QSize(18, 18))
+        self.shuffle_btn.setIcon(QIcon(shuffle_icon(18, "#ffffff")))
         self.shuffle_btn.setObjectName("shuffleButton")
         self.shuffle_btn.setCheckable(True)
         self.shuffle_btn.toggled.connect(self.shuffle_toggled.emit)
@@ -77,7 +88,7 @@ class PlayerBar(QWidget):
         
         # ===== Volume =====
         volume_layout = QHBoxLayout()
-        volume_label = QLabel("🔊 Vol")
+        volume_label = QLabel("Vol")
         volume_layout.addWidget(volume_label)
         
         self.volume_slider = FocusAwareSlider(Qt.Horizontal)
@@ -146,8 +157,14 @@ class PlayerBar(QWidget):
         self.shuffle_btn.blockSignals(False)
     
     def set_play_pause_state(self, playing: bool):
-        """Update the button label based on playback state."""
-        self.play_pause_btn.setText("⏸ Pause" if playing else "▶ Play")
+        """Update the button label and icon based on playback state."""
+        self._playing = bool(playing)
+        self._update_play_pause_icon()
+
+    def _update_play_pause_icon(self):
+        self.play_pause_btn.setText("Pause" if self._playing else "Play")
+        icon = pause_icon(18, "#ffffff") if self._playing else play_icon(18, "#ffffff")
+        self.play_pause_btn.setIcon(QIcon(icon))
 
     def on_volume_changed(self, value):
         """Handle volume slider changes"""

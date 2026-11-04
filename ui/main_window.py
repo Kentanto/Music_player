@@ -307,6 +307,7 @@ class MainWindow(QMainWindow):
                 self.fullscreen_player.prev_button,
                 self.fullscreen_player.play_pause_button,
                 self.fullscreen_player.next_button,
+                self.fullscreen_player.shuffle_button,
                 self.fullscreen_player.volume_slider,
             ]
         return [
@@ -338,6 +339,7 @@ class MainWindow(QMainWindow):
                 self.fullscreen_player.prev_button,
                 self.fullscreen_player.play_pause_button,
                 self.fullscreen_player.next_button,
+                self.fullscreen_player.shuffle_button,
             ],
             [self.fullscreen_player.volume_slider],
         ]
