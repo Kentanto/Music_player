@@ -177,7 +177,13 @@ class Player:
         self._restore_next_sources()
 
     def _restore_next_sources(self):
-        """Re-insert queued-next sources immediately after the current track."""
+        """Re-insert queued-next sources immediately after the current track.
+
+        Copies stranded at an earlier anchor position (before the current
+        index) are stripped as well, so re-anchoring after the current track
+        moves (manual pick, shuffle change, ...) never leaves the same song
+        queued twice or stuck behind the play position.
+        """
         if not self._next_sources:
             return
         self._next_sources = [s for s in self._next_sources if s in self.queue]
@@ -195,12 +201,23 @@ class Player:
             self._current_item = None
             return
 
-        # Only strip duplicates from AFTER the current position so the
-        # currently-playing track is never removed.
-        insert_at = self.index + 1
-        tail = [u for u in self.queue[insert_at:] if u not in self._next_sources]
-        self.queue = self.queue[:insert_at] + tail
+        # Keep the currently-playing track even when it is itself a queued
+        # source; drop every other copy of the queued sources so each queue
+        # request exists exactly once, right after the current track.
+        current = self.queue[self.index]
+        kept = [u for u in self.queue[:self.index] if u not in self._next_sources]
+        kept.append(current)
+        for url in self.queue[self.index + 1:]:
+            if url not in self._next_sources and url != current:
+                kept.append(url)
+        self.queue = kept
 
+        # The rebuild can move the current track forward (stale queued
+        # copies were stripped in front of it), so re-sync the index to the
+        # current track's new position before inserting after it.
+        self.index = self.queue.index(current)
+
+        insert_at = self.index + 1
         for src in self._next_sources:
             self.queue.insert(insert_at, src)
             insert_at += 1
@@ -211,6 +228,11 @@ class Player:
             return
         if source not in self._base_queue:
             self._base_queue.append(source)
+        # A source from outside the current queue (e.g. a search result)
+        # must join the live queue too, or _restore_next_sources would
+        # drop it again right below.
+        if source not in self.queue:
+            self.queue.append(source)
         # Allow the same song to be queued multiple times
         self._next_sources.append(source)
         self._restore_next_sources()
@@ -223,6 +245,24 @@ class Player:
             self.index -= 1
             self._current_item = self.queue[self.index]
             self.play()
+
+    def play_at(self, idx):
+        """Play the queue entry at idx (a manual pick from the UI).
+
+        Queued-next sources are re-anchored right behind the newly picked
+        track, so a song the user queued earlier still plays when this one
+        ends.  Picking a song that was itself queued consumes one queue
+        request, matching how _advance() consumes it on autoplay.
+        """
+        if not 0 <= idx < len(self.queue):
+            return
+        self.index = idx
+        self._current_item = self.queue[idx]
+        if self._current_item in self._next_sources:
+            self._next_sources.remove(self._current_item)
+        if self._next_sources:
+            self._restore_next_sources()
+        self.play()
 
     def _advance(self):
         """Advance to the next track and clean up played queued-next sources."""

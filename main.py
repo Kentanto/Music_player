@@ -339,13 +339,13 @@ class MusicAppController:
         if not selected_url:
             return None
 
-        # If the song is already in the active player queue, just seek to it
-        # and play WITHOUT rebuilding/touching shuffle order.
+        # If the song is already in the active player queue, just play it
+        # WITHOUT rebuilding/touching shuffle order.  play_at() re-anchors
+        # any queued-next song right behind this pick, so a song the user
+        # queued earlier still plays when this one ends.
         if selected_url in self.player.queue:
-            idx = self.player.queue.index(selected_url)
-            self.player.index = idx
-            self.player._current_item = selected_url
-            self.player.play()
+            self.player.play_at(self.player.queue.index(selected_url))
+            self.active_queue_urls = list(self.player.queue)
             self._refresh_queue_display()
             self._update_now_playing()
             return selected_url
