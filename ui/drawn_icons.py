@@ -10,12 +10,32 @@ machine no matter which fonts or themes are installed.
 import math
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
+
+
+def _device_pixel_ratio():
+    """Device pixel ratio to render icons at (HiDPI screens need > 1)."""
+    app = QGuiApplication.instance()
+    if app is None:
+        return 1.0
+    screen = app.primaryScreen()
+    if screen is None:
+        return 1.0
+    return max(1.0, float(screen.devicePixelRatio()))
 
 
 def _pixmap(size, color):
-    """Transparent pixmap plus a painter pre-set to fill with `color`."""
-    pixmap = QPixmap(int(size), int(size))
+    """Transparent pixmap plus a painter pre-set to fill with `color`.
+
+    The pixmap is allocated at the screen's device pixel ratio. A plain
+    logical-size pixmap gets scaled up by Qt on HiDPI panels, which is why
+    the symbols used to look blurred while the button text next to them
+    (font-rendered, always resolution aware) stayed crisp.
+    """
+    dpr = _device_pixel_ratio()
+    physical = max(1, int(round(float(size) * dpr)))
+    pixmap = QPixmap(physical, physical)
+    pixmap.setDevicePixelRatio(physical / float(size))
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -32,9 +52,12 @@ def _pen(size, color, width):
 
 
 def _arrowhead(painter, tip, direction, size):
-    """Filled triangle at `tip` pointing along the unit vector `direction`."""
+    """Filled triangle at `tip` pointing along `direction` (any length)."""
     tip = QPointF(tip)
     direction = QPointF(direction)
+    length = math.hypot(direction.x(), direction.y())
+    if length > 0.0:
+        direction = QPointF(direction.x() / length, direction.y() / length)
     perpendicular = QPointF(-direction.y(), direction.x())
     base_center = tip - direction * size
     a = base_center + perpendicular * size * 0.55
@@ -101,36 +124,60 @@ def next_icon(size, color="#f2f2f2"):
     return pixmap
 
 
+def _shuffle_geometry(n):
+    """Corner coordinates of the two crossing shuffle arrows at size n.
+
+    Pure coordinate math (no painting) so the layout stays unit-testable:
+    the arrowheads must keep clear of each other — the previous layout
+    left well under a pixel between them at the 18px button size, so the
+    two heads merged into one blob.
+
+    Returns a tuple of (stroke points, head tip, head direction, head size)
+    for the up-right and the down-right arrow.
+    """
+    stub_x0 = 0.08 * n
+    corner_x = 0.30 * n
+    bend_x = 0.76 * n
+    tip_x = 0.84 * n
+    head = 0.17 * n
+    up = (
+        QPointF(stub_x0, 0.70 * n),
+        QPointF(corner_x, 0.70 * n),
+        QPointF(bend_x, 0.24 * n),
+    )
+    down = (
+        QPointF(stub_x0, 0.30 * n),
+        QPointF(corner_x, 0.30 * n),
+        QPointF(bend_x, 0.76 * n),
+    )
+    return (
+        (up, QPointF(tip_x, 0.16 * n), QPointF(1.0, -1.0), head),
+        (down, QPointF(tip_x, 0.84 * n), QPointF(1.0, 1.0), head),
+    )
+
+
 def shuffle_icon(size, color="#f2f2f2"):
-    """Two crossing paths, each ending in an arrowhead."""
+    """Two crossing paths, each ending in an arrowhead.
+
+    The heads point into the top-right and bottom-right corners with
+    generous space between them, and _pixmap renders at the screen's
+    device pixel ratio so the symbol matches the crispness of the button
+    text instead of blurring.
+    """
     n = float(size)
     pixmap, painter = _pixmap(size, color)
     painter.setPen(_pen(size, color, max(2.0, 0.08 * n)))
-    head = 0.20 * n
 
-    # Bottom-left path that crosses up to the top-right corner.
-    painter.drawLine(QPointF(0.10 * n, 0.70 * n), QPointF(0.40 * n, 0.70 * n))
-    painter.drawLine(QPointF(0.40 * n, 0.70 * n), QPointF(0.78 * n, 0.32 * n))
-    dx, dy = 0.78 - 0.40, 0.32 - 0.70
-    length = math.hypot(dx, dy)
-    _arrowhead(
-        painter,
-        QPointF(0.84 * n, 0.26 * n),
-        QPointF(dx / length, dy / length),
-        head,
-    )
-
-    # Top-left path that crosses down to the bottom-right corner.
-    painter.drawLine(QPointF(0.10 * n, 0.30 * n), QPointF(0.40 * n, 0.30 * n))
-    painter.drawLine(QPointF(0.40 * n, 0.30 * n), QPointF(0.78 * n, 0.68 * n))
-    dx, dy = 0.78 - 0.40, 0.68 - 0.30
-    length = math.hypot(dx, dy)
-    _arrowhead(
-        painter,
-        QPointF(0.84 * n, 0.74 * n),
-        QPointF(dx / length, dy / length),
-        head,
-    )
+    for points, tip, direction, head in _shuffle_geometry(n):
+        path = QPainterPath()
+        path.moveTo(points[0])
+        for point in points[1:]:
+            path.lineTo(point)
+        # One stroked polyline per arrow: the corner between the stub and
+        # the diagonal gets a proper round join instead of two separate
+        # line caps sitting next to each other.
+        painter.strokePath(path, painter.pen())
+        _arrowhead(painter, tip, direction, head)
     painter.end()
     return pixmap
 

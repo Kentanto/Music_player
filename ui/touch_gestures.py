@@ -3,25 +3,37 @@
 One application-wide event filter adds three touch-friendly behaviours
 without changing how a mouse behaves:
 
-- press and hold about a second (without dragging) acts as a right click,
-  so context menus (songs, playlists) can be opened from a touchscreen,
+- press and hold about half a second (without dragging) acts as a right
+  click, so context menus (songs, playlists) can be opened from a
+  touchscreen,
 - press, keep held and drag scrolls the queue / playlist list directly;
   slow drags track the finger 1:1, quick flicks scroll further per pixel of
   travel and keep gliding briefly after the finger lifts (ice feel) until
   the speed bleeds off or the screen is touched again,
 - inside the fullscreen view: a press while the idle EQ view is showing
-  only wakes the controls back up, and a touchscreen tap never exits
-  fullscreen; only a real mouse click on empty space still does, and the
-  bottom controls area is a safe zone that never exits fullscreen either.
+  only wakes the controls back up, the bottom controls area is a safe
+  zone whose presses never exit fullscreen, and any other tap on empty
+  space — touchscreen or mouse — closes the fullscreen view.
 
 Qt synthesizes mouse events from touch input for widgets that do not handle
 touch themselves, so this filter only looks at mouse events and works on
 both X11 and Wayland.
+
+The press/release bookkeeping is deliberately self-healing. A touch
+sequence can lose its release (a popup menu grabbed it, the panel dropped
+it), and a handler wedged on such a press would silently swallow every
+later one — holds would stop registering until some stray release happened
+to free it. So a genuinely new press always takes over the tracking (a
+press re-offered to a parent widget — Qt relays mouse events that a child
+ignores — is recognised as the same one and left alone), and a hold only
+fires while the button is verifiably still down and the row under the
+finger is still the row that was pressed.
 """
 
 import time
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPersistentModelIndex, Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
@@ -35,7 +47,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-HOLD_MS = 1000        # press-and-hold before it counts as a right click
+HOLD_MS = 550         # press-and-hold before it counts as a right click
 DRAG_START_PX = 18    # movement before it counts as a drag
 CLICK_BLOCK_MS = 400  # how long clicks stay blocked after a hold or drag
 
@@ -72,6 +84,7 @@ class TouchGestureHandler(QObject):
 
         self._active = False
         self._press_widget = None
+        self._press_index = None
         self._press_global = None
         self._moved = False
         self._hold_fired = False
@@ -181,19 +194,35 @@ class TouchGestureHandler(QObject):
         return float(row_height) if row_height > 0 else 1.0
 
     @staticmethod
-    def _is_touch_synthesized(event):
-        """True when the mouse event was made out of touch input.
+    def _left_button_down():
+        """True while the left button is held (real mouse or touch contact).
 
-        Qt (or the window system) synthesizes mouse events for touchscreen
-        touches; a real mouse reports MouseEventNotSynthesized. The enum
-        lives on the value's own type in this PySide6 build.
+        Qt keeps this state up to date for the mouse events synthesized
+        from touch as well, so it is the reliable way to notice that a
+        hold's press is long gone even though its release never arrived.
         """
-        source = event.source()
-        not_synthesized = getattr(type(source), "MouseEventNotSynthesized", None)
-        if not_synthesized is not None:
-            return source != not_synthesized
-        # Enum layouts without the member on the type: compare names.
-        return str(getattr(source, "name", "")) != "MouseEventNotSynthesized"
+        return bool(QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+
+    def _pressed_row_unchanged(self):
+        """True if the row under the finger is still the pressed one.
+
+        No list was pressed (or its row could not be resolved): there is
+        nothing to compare, the hold may fire.
+        """
+        if self._scroll_view is None or self._press_index is None:
+            return True
+        try:
+            local = self._press_widget.mapTo(
+                self._scroll_view.viewport(), self._press_local.toPoint()
+            )
+            current = self._scroll_view.indexAt(local)
+        except RuntimeError:
+            return False  # the pressed widget was destroyed mid-hold
+        return (
+            self._press_index.isValid()
+            and current.isValid()
+            and current == self._press_index
+        )
 
     def _start_fling(self, now):
         """Carry flick momentum over the release so the list glides."""
@@ -305,18 +334,41 @@ class TouchGestureHandler(QObject):
     # ---------- gesture state machine ----------
 
     def _on_press(self, watched, event):
+        stopped_glide = False
         if self._fling_timer.isActive():
             # Grabbing the gliding list stops it dead. Only a tap that
             # grabbed a still-lively glide counts as a gesture afterwards;
             # when the glide had nearly died, the tap registers normally.
-            self._fling_stopped_by_press = (
-                abs(self._fling_speed) >= FLING_GRAB_SWALLOW_PXMS
-            )
+            stopped_glide = abs(self._fling_speed) >= FLING_GRAB_SWALLOW_PXMS
             self._stop_fling()
-        else:
-            self._fling_stopped_by_press = False
+
+        if self._active and self._press_global is not None:
+            delta = event.globalPosition() - self._press_global
+            if abs(delta.x()) < 1.0 and abs(delta.y()) < 1.0:
+                # The same physical press re-offered to a parent widget:
+                # when a child widget ignores a mouse event, Qt relays it
+                # up the parent chain and every relay passes through this
+                # filter again. It is not a new finger — the tracking the
+                # child dispatch started must stand (otherwise a press on
+                # a plain label like the fullscreen artwork would be
+                # re-tracked on its parent and lose its context).
+                return False
+
         if self._active:
-            return False  # a second finger: ignore
+            # The previous press never saw its release — a popup menu
+            # grabbed it, the panel dropped the touch sequence, or a
+            # second finger landed elsewhere. Never let that wedge the
+            # handler (it would silently swallow every later press, which
+            # is how holds randomly stopped registering): the newest press
+            # always wins and tracking restarts here, so one lost release
+            # costs at most a single gesture instead of all the ones after
+            # it.
+            self._reset()
+
+        if self._nearest(watched, QMenu) is not None:
+            # Presses on popup menus are the menu's own business; arming
+            # hold/drag state on them only invites a release the menu eats.
+            return False
 
         fullscreen = getattr(self._window, "fullscreen_player", None)
         in_fullscreen = bool(
@@ -332,6 +384,7 @@ class TouchGestureHandler(QObject):
         self._moved = False
         self._hold_fired = False
         self._drag_scrolled = False
+        self._fling_stopped_by_press = stopped_glide
         self._press_in_fullscreen = in_fullscreen
         # The fullscreen view's own filter wakes the controls on this same
         # press, so _idle_mode may already be False by now. When that press
@@ -349,6 +402,22 @@ class TouchGestureHandler(QObject):
             self._scroll_view = None
         else:
             self._scroll_view = self._nearest(watched, QAbstractItemView)
+
+        # Snapshot of what was under the finger when it went down. If the
+        # list scrolls or gets rebuilt while the finger is held, the hold
+        # must cancel instead of opening the menu for whatever song drifted
+        # under the same point.
+        self._press_index = None
+        if self._scroll_view is not None:
+            try:
+                local = self._press_widget.mapTo(
+                    self._scroll_view.viewport(), self._press_local.toPoint()
+                )
+                index = self._scroll_view.indexAt(local)
+                if index.isValid():
+                    self._press_index = QPersistentModelIndex(index)
+            except RuntimeError:
+                pass  # the pressed widget died between the press and here
 
         self._hold_timer.start()
         return False
@@ -433,18 +502,39 @@ class TouchGestureHandler(QObject):
                     # This tap only woke the controls up (the fullscreen
                     # view handles that itself on any press).
                     pass
-                elif self._is_touch_synthesized(event):
-                    # A touchscreen tap never exits fullscreen — like a
-                    # mouse click it only wakes the idle view up.
+                elif self._is_interactive(press_widget) or fullscreen.in_click_safe_area(press_widget):
+                    # Aimed at a control or inside the always-safe bottom
+                    # panel: these presses never exit fullscreen.
                     pass
-                elif not self._is_interactive(press_widget) and not fullscreen.in_click_safe_area(press_widget):
+                else:
+                    # A tap on empty space — touchscreen or mouse — exits
+                    # fullscreen. Block the leftover click briefly so the
+                    # same tap cannot also hit whatever sits underneath in
+                    # the main window once the view is gone.
+                    self._block_clicks_until = (
+                        time.monotonic() + CLICK_BLOCK_MS / 1000.0
+                    )
                     fullscreen.close()
 
         return was_gesture
 
     def _hold_timeout(self):
-        """The finger stayed put for a second — act as a right click."""
+        """The finger stayed put long enough — act as a right click."""
         if not self._active or self._hold_fired or self._moved:
+            return
+        if not self._left_button_down():
+            # The release of this press got lost (a popup menu grabbed it,
+            # the panel dropped the touch). The finger is no longer on the
+            # screen, so firing now would open a context menu at a stale
+            # press position — exactly the menu that "opens on a song
+            # further down". Reset instead so the next press starts clean.
+            self._reset()
+            return
+        if not self._pressed_row_unchanged():
+            # The list scrolled or was rebuilt under the held finger: the
+            # point no longer means the song the user is holding, so the
+            # menu must not open for whatever row drifted there.
+            self._reset()
             return
         self._hold_fired = True
         target = self._context_menu_target(self._press_widget)
@@ -459,6 +549,7 @@ class TouchGestureHandler(QObject):
     def _reset(self):
         self._active = False
         self._press_widget = None
+        self._press_index = None
         self._press_local = None
         self._press_global = None
         self._moved = False
