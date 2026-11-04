@@ -163,8 +163,14 @@ class MusicAppController:
         # Restore the last playlist or show playlists first
         self._restore_last_view()
         
-        # Set initial volume AFTER handlers are connected
-        self.window.player_bar.volume_slider.setValue(30)
+        # Set initial volume AFTER handlers are connected, restoring the
+        # volume saved in the database (falls back to 30 on first run).
+        saved_volume = get_app_setting("volume", 30)
+        try:
+            saved_volume = int(float(saved_volume))
+        except (TypeError, ValueError):
+            saved_volume = 30
+        self.window.player_bar.volume_slider.setValue(max(0, min(saved_volume, 100)))
     
     def on_player_position_changed(self, position_ms):
         """Update seek bar as song plays"""
@@ -1198,10 +1204,11 @@ class MusicAppController:
         return None
 
     def handle_volume_change(self, value):
-        """Update player volume"""
+        """Update player volume and remember it in the database"""
         self.player.set_volume(value)
         self.window.player_bar.set_volume(value)
         self.window.fullscreen_player.set_volume(value)
+        set_app_setting("volume", int(value))
         if self.mpris:
             self.mpris.set_volume(max(0, min(int(value), 100)) / 100.0)
 
