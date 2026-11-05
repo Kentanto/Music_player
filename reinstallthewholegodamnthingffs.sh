@@ -24,7 +24,7 @@ DESKTOP_DIR="$HOME/.local/share/applications"
 
 # Python dependencies, pinned to the versions the working setups use.
 # (spotipy pulls in requests/urllib3 by itself.)
-PY_PACKAGES="PySide6==6.11.2 yt-dlp==2026.8.19 spotipy==2.26.0 dbus-fast==5.2.0 pyinstaller"
+PY_PACKAGES="PySide6==6.12.0 yt-dlp==2026.8.19 spotipy==2.26.0 dbus-fast==5.2.0 pyinstaller"
 
 msg()  { echo "[music-engine] $*"; }
 fail() { echo "[music-engine] ERROR: $*" >&2; exit 1; }
@@ -165,6 +165,14 @@ else
 fi
 
 # --------------------------------------------------------------- python environment
+
+# A .venv left behind by an old system Python (e.g. after a distro upgrade
+# bumps python3.14 -> python3.15) silently loses every installed package.
+# Detect that and rebuild the venv instead of reusing it.
+if [ -d .venv ] && ! .venv/bin/python3 -m pip --version >/dev/null 2>&1; then
+    msg "Existing .venv is broken (usually a system Python upgrade) — recreating it..."
+    rm -rf .venv || fail "could not remove the broken .venv"
+fi
 
 if [ ! -d .venv ]; then
     msg "Creating virtual environment..."
