@@ -283,8 +283,13 @@ def _migrate_to_portable_paths(c):
         if old_key != new_key:
             folder_moves[old_key] = new_key
 
-    # Pass 2: the song file paths.
-    for row_id, file_path in c.execute("SELECT id, file_path FROM playlist_songs").fetchall():
+    # Pass 2: normalize song paths, but leave conflicting rows untouched.
+    # Older databases can contain different spellings of the same path, and
+    # playlist_songs.file_path is globally unique.
+    rows = c.execute("SELECT id, file_path FROM playlist_songs").fetchall()
+    portable_paths = {}
+    rows_by_portable_path = {}
+    for row_id, file_path in rows:
         if not file_path:
             continue
         current = str(file_path).replace("\\", "/")
@@ -297,6 +302,27 @@ def _migrate_to_portable_paths(c):
                 current = new_prefix + current[len(old_prefix):]
                 break
         portable = to_portable_path(current)
+        portable_paths[row_id] = portable
+        rows_by_portable_path.setdefault(portable, []).append(row_id)
+
+    conflicting_rows = {
+        row_id
+        for row_ids in rows_by_portable_path.values()
+        if len(row_ids) > 1
+        for row_id in row_ids
+    }
+    for portable, row_ids in rows_by_portable_path.items():
+        if len(row_ids) > 1:
+            print(
+                f"[db-migration] Keeping conflicting playlist song paths unchanged "
+                f"for rows {row_ids}: {portable!r} is already represented more than once",
+                flush=True,
+            )
+
+    for row_id, file_path in rows:
+        if row_id in conflicting_rows or row_id not in portable_paths:
+            continue
+        portable = portable_paths[row_id]
         if portable != file_path:
             c.execute("UPDATE playlist_songs SET file_path=? WHERE id=?", (portable, row_id))
 
