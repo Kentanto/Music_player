@@ -1,35 +1,8 @@
-fixes/features needed:
-- cec remote needs fast pause availability
-- cec remote needs a fast fullscreen button
-- cec needs a ch override to be right click for mouse instead of ch
-
-
-
-kent@kent-Surface-Pro:~$ sudo evtest /dev/input/event8
-[sudo] password for kent:     
-Input driver version is 1.0.1
-Input device ID: bus 0x0 vendor 0x45e product 0x1f version 0x0
-Input device name: "IPTS 045E:001F Touchscreen"
-Supported events:
-  Event type 0 (EV_SYN)
-  Event type 1 (EV_KEY)
-    Event code 330 (BTN_TOUCH)
-  Event type 3 (EV_ABS)
-    Event code 0 (ABS_X)
-      Value      0
-      Min        0
-      Max    32767
-      Resolution     112
-    Event code 1 (ABS_Y)
-      Value      0
-      Min        0
-      Max    32767
-      Resolution     198
-  Event type 4 (EV_MSC)
-    Event code 4 (MSC_SCAN)
-Properties:
-Testing ... (interrupt to exit)
-^C
-kent@kent-Surface-Pro:~$ 
-
-
+all these changes will be linked to a button changing the layout for a touch panel:
+- make the program more touch panel friendly, changing the locations of buttons to take up more space of the already empty space more efficiently making them bigger and different shapes to fit the empty space better. the volume bar will look like a increasing size trianlge like bar rather than boring straight bar its bottom angled perfectly horisontal and large edge is shorter than the rest of the walls to make that iconic volume bar shape, it will take pretty much all the space between where it sits now all the way until the start of the eq, just not coliding, make sure to give breathing room. the other buttons go above it in a neat manner taking good space where from top left id like a circle prev then big circle play then circle next, unde those between the volume and the media buttons are shuffle in a larger rectanlge format and the fullscreen in the same format. 
+- the buttons top left gets moves in a hamburger menu all the way to the right side and the thumbail photo of the songs will take up the rest of the top left space filling it in, the search bar will shrink to fit more of the thumbnail upwards the hamburger menu uses same button sizes as a right click in the queue does. the seek bar will move to jsut under the newly sized and possition image thumbnail and just above the media buttons spanning from edge to queue view giving breathing room ofc, this will give more room the later instructions of making search bares bigger and all that
+- the queue view song items is pretty small, and there is a lot of space to the right of the songs, make the height of each individual song twice as bigg with text and images in there scaling to join the double sizing.
+- the search bar for youtube and queue needs to be around 1.5 times bigger in height same with the sorting option button and its options, the reverse sort order also needs to be bigger.
+- find any other good optimization for a touch panel to work better, its a surface pro 5 with linux cinnamon mint with touch drivers configured and gestures are used, but dont touch multi touch gestures except for the bottom feature under this
+- i would like to to add the feature of swiping right on a song in the queue list to queue it and left removes it from queue(very imnportant not deleting it from the list permanently, basicly just stops it from playing on that particular queue order until its refreshed)
+- the music program needs to prevent the pc from blacking out the screen after a little while, this hsould only stop it from happening when fullscreen is active, jsut every once a while send a wakeup call to the screen when fullscreen mode is active
