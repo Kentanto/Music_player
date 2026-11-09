@@ -1,7 +1,7 @@
 """Touch-friendly wedge-shaped volume slider.
 
 A right trapezoid (triangle-like) that grows taller from left to right
-(horizontal) or bottom to top (vertical, pointing upward).
+(horizontal) or wider from bottom to top (vertical, wide edge at the top).
 The entire widget area is touch-sensitive — no tiny thumb to aim at.
 """
 
@@ -15,8 +15,10 @@ class WedgeVolumeSlider(QWidget):
 
     * Horizontal: bottom edge horizontal, left edge short, right edge tall,
       top slants from short to tall.
-    * Vertical (pointing up): left edge straight, bottom edge wide,
-      top edge short (the point), right edge slants from wide to short.
+    * Vertical (pointing down): left edge straight, top edge wide,
+      bottom edge short (the point), right edge slants from wide to short.
+      The green fill is anchored at the bottom and grows upward as the
+      volume rises.
     * Click or drag anywhere inside to set the volume.
     """
 
@@ -31,7 +33,7 @@ class WedgeVolumeSlider(QWidget):
             self.setMaximumHeight(56)
             self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         else:
-            # Vertical: point downward, much larger for touch mode
+            # Vertical: wide at top, point at the bottom, much larger for touch
             self.setMinimumWidth(90)
             self.setMaximumWidth(120)
             self.setMinimumHeight(260)
@@ -159,7 +161,7 @@ class WedgeVolumeSlider(QWidget):
         )
 
     def _paint_vertical(self, painter, w, h, pad):
-        # Wide top, point at bottom (upside-down wedge)
+        # Wide top, point at bottom (wedge pointing down, as originally drawn)
         top_w = max(10, w * 0.82)
         bottom_w = max(3, w * 0.08)
         lx = pad
@@ -171,28 +173,28 @@ class WedgeVolumeSlider(QWidget):
         outline.moveTo(lx, ty)                    # top-left
         outline.lineTo(lx + top_w, ty)            # top edge (wide)
         outline.lineTo(lx + bottom_w, by)         # right edge slants to bottom point
-        outline.lineTo(lx, by)                    # bottom-left (point)
+        outline.lineTo(lx, by)                    # bottom-left
         outline.closeSubpath()
 
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(35, 35, 35))
         painter.drawPath(outline)
 
-        # Filled portion (grows from top to bottom)
+        # Filled portion (anchored at the bottom, grows upward as volume rises)
         fill_h = int((h - pad * 2) * self._value / 100.0)
         if fill_h > 2:
             ratio = fill_h / max(1, h - pad * 2)
-            # As we go down, the right edge gets narrower
-            right_x_at_fill = (lx + top_w) - (top_w - bottom_w) * ratio
+            # As the fill rises, the right edge gets wider
+            right_x_at_fill = (lx + bottom_w) + (top_w - bottom_w) * ratio
 
             fill_path = QPainterPath()
-            fill_path.moveTo(lx, ty)                        # top-left
-            fill_path.lineTo(lx + top_w, ty)                # top edge
-            fill_path.lineTo(right_x_at_fill, ty + fill_h)  # bottom-right at fill
-            fill_path.lineTo(lx, ty + fill_h)               # bottom-left at fill
+            fill_path.moveTo(lx, by)                        # bottom-left
+            fill_path.lineTo(lx + bottom_w, by)             # bottom edge (the point)
+            fill_path.lineTo(right_x_at_fill, by - fill_h)  # top-right at fill
+            fill_path.lineTo(lx, by - fill_h)                # top-left at fill
             fill_path.closeSubpath()
 
-            grad = QLinearGradient(lx, ty, lx, by)
+            grad = QLinearGradient(lx, by, lx, ty)
             grad.setColorAt(0.0, QColor("#1aa34a"))
             grad.setColorAt(0.5, QColor("#1db954"))
             grad.setColorAt(1.0, QColor("#58d878"))

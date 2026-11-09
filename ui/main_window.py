@@ -113,7 +113,7 @@ class MainWindow(QMainWindow):
         self.left_panel.setMinimumWidth(420)
         left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
+        left_layout.setSpacing(4)
 
         self.cover_widget = CoverWidget()
         left_layout.addWidget(self.cover_widget, 1)

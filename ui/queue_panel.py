@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QPushButton, QMenu, QStyledItemDelegate, QStyle,
 )
-from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl, QTimer
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl, QTimer, QPoint
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
@@ -238,6 +238,40 @@ class QueueItemDelegate(QStyledItemDelegate):
         return QSize(option.rect.width(), self.ICON_SIZE + self.PADDING * 2 + 8)
 
 
+class _ScrollBadge(QWidget):
+    """Floating pill that mirrors the list's scroll position.
+
+    Replaces the classic scrollbar: no track/column is reserved for it,
+    it is transparent to mouse/touch input (gestures pass through), and
+    it hides itself after scrolling stops.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._w = 8
+        self.setFixedWidth(self._w)
+        self.hide()
+
+    def set_width(self, w):
+        self._w = int(w)
+        self.setFixedWidth(self._w)
+
+    def reposition(self, viewport, handle_h, y):
+        """Anchor the badge to the right edge of the list's viewport."""
+        self.setFixedHeight(max(28, int(handle_h)))
+        origin = viewport.mapTo(self.parentWidget(), QPoint(0, 0))
+        self.move(origin.x() + viewport.width() - self._w - 3, int(y))
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(96, 96, 96, 230))
+        r = min(self.width(), self.height()) / 2.0
+        p.drawRoundedRect(self.rect().adjusted(0, 0, -1, -1), r, r)
+
+
 class QueuePanel(QWidget):
     """Displays search results or queue with rich rows."""
 
@@ -273,13 +307,8 @@ class QueuePanel(QWidget):
         self.filter_input.setMinimumHeight(52 if enabled else 28)
         self.sort_combo.setMinimumHeight(52 if enabled else 28)
         self.sort_dir_btn.setFixedSize(64 if enabled else 28, 52 if enabled else 28)
-        # Scrollbar auto-hide: width 32px touch / 20px normal, start hidden
-        width = 32 if enabled else 20
-        self._sb_hide_ss = self._make_scrollbar_ss(width, visible=False)
-        self._sb_show_ss = self._make_scrollbar_ss(width, visible=True)
-        sb = self.list_widget.verticalScrollBar()
-        sb.setStyleSheet(self._sb_hide_ss)
-        self._scrollbar_visible = False
+        # Floating scroll badge: a bit thicker in touch mode, slim normally.
+        self.scroll_badge.set_width(14 if enabled else 8)
         # Force re-layout of all rows
         self._refresh_display()
 
@@ -323,19 +352,22 @@ class QueuePanel(QWidget):
         # scroll in ui/touch_gestures.py can then track the finger 1:1,
         # and mouse-wheel scrolling becomes smoother too.
         self.list_widget.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        # No scrollbar column at all: the list uses the full width and a
+        # floating badge (self.scroll_badge) indicates the scroll position.
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
 
-        # Auto-hide scrollbar: hidden until user scrolls, stays visible for 1.5s
+        # Overlay scroll badge: appears over the content while scrolling and
+        # hides itself after 1.5s of no activity.
+        self.scroll_badge = _ScrollBadge(self)
         sb = self.list_widget.verticalScrollBar()
-        sb.setStyleSheet(self._make_scrollbar_ss(20, False))
-        self._scrollbar_visible = False
         self._scroll_hide_timer = QTimer(self)
         self._scroll_hide_timer.setInterval(1500)
         self._scroll_hide_timer.setSingleShot(True)
         self._scroll_hide_timer.timeout.connect(self._hide_scrollbar)
         sb.valueChanged.connect(self._on_scroll_activity)
+        sb.rangeChanged.connect(lambda *_: self._update_scroll_badge())
 
         self.list_widget.installEventFilter(self)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
@@ -547,40 +579,49 @@ class QueuePanel(QWidget):
             return
         self.item_previewed.emit(current.data(Qt.UserRole))
 
-    @staticmethod
-    def _make_scrollbar_ss(width, visible):
-        handle_color = "#606060" if visible else "transparent"
-        return (
-            f"QScrollBar:vertical {{ background-color: transparent; width: {width}px; border: none; }}"
-            f"QScrollBar::handle:vertical {{ background-color: {handle_color}; min-height: 48px; border-radius: 12px; margin: 3px; }}"
-            "QScrollBar::handle:vertical:hover { background-color: #1db954; }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; width: 0px; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
-        )
-
     def _on_scroll_activity(self, value=None):
-        if not getattr(self, '_scrollbar_visible', False):
-            sb = self.list_widget.verticalScrollBar()
-            ss = getattr(self, '_sb_show_ss', self._make_scrollbar_ss(24, True))
-            sb.setStyleSheet(ss)
-            self._scrollbar_visible = True
+        if self._update_scroll_badge():
+            self.scroll_badge.show()
         self._scroll_hide_timer.stop()
         self._scroll_hide_timer.start()
 
     def _hide_scrollbar(self):
-        if getattr(self, '_scrollbar_visible', False):
-            sb = self.list_widget.verticalScrollBar()
-            ss = getattr(self, '_sb_hide_ss', self._make_scrollbar_ss(24, False))
-            sb.setStyleSheet(ss)
-            self._scrollbar_visible = False
+        self.scroll_badge.hide()
+
+    def _update_scroll_badge(self):
+        """Reposition/resize the floating badge from the scrollbar state.
+
+        Returns True when the list is actually scrollable.
+        """
+        sb = self.list_widget.verticalScrollBar()
+        if sb.maximum() <= 0:
+            self.scroll_badge.hide()
+            return False
+        vp = self.list_widget.viewport()
+        track_h = vp.height()
+        if track_h <= 0:
+            return False
+        page = max(1, sb.pageStep())
+        total = sb.maximum() + page
+        handle_h = max(36, int(track_h * page / max(1, total)))
+        handle_h = min(handle_h, track_h)
+        span = max(1, sb.maximum())
+        y = vp.mapTo(self, QPoint(0, 0)).y()
+        y += round((sb.value() / span) * (track_h - handle_h))
+        self.scroll_badge.reposition(vp, handle_h, y)
+        return True
 
     def eventFilter(self, watched, event):
-        if watched is self.list_widget and event.type() == QEvent.KeyPress:
-            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                current = self.list_widget.currentItem()
-                if current is not None:
-                    self.item_double_clicked.emit(current.data(Qt.UserRole))
-                    return True
+        if watched is self.list_widget:
+            if event.type() == QEvent.Resize:
+                # Keep the floating badge glued to the viewport edge.
+                self._update_scroll_badge()
+            elif event.type() == QEvent.KeyPress:
+                if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                    current = self.list_widget.currentItem()
+                    if current is not None:
+                        self.item_double_clicked.emit(current.data(Qt.UserRole))
+                        return True
         return super().eventFilter(watched, event)
 
     def on_item_double_clicked(self, item):

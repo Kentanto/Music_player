@@ -23,9 +23,11 @@ class TouchPlayerBar(QWidget):
 
     def init_ui(self):
         main_l = QVBoxLayout()
-        main_l.setContentsMargins(10, 14, 10, 14)
-        main_l.setSpacing(16)
-        self.setMinimumHeight(560)
+        main_l.setContentsMargins(10, 6, 10, 6)
+        main_l.setSpacing(8)
+        # No artificial minimum height: the layout's own minimum keeps the
+        # seek bar, buttons and EQ snug, and every spare pixel goes to the
+        # cover image above instead of to gaps around here.
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
 
         # -- Seek bar --
@@ -37,8 +39,8 @@ class TouchPlayerBar(QWidget):
         self.seek_slider = FocusAwareSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setObjectName("touchSeekSlider")
         self.seek_slider.setRange(0, 100)
-        self.seek_slider.setMinimumHeight(70)
-        self.seek_slider.setMaximumHeight(80)
+        self.seek_slider.setMinimumHeight(48)
+        self.seek_slider.setMaximumHeight(56)
         self.seek_slider.sliderMoved.connect(self._on_seek)
         self.seek_slider.focus_changed.connect(self._on_seek_focus)
         self.seek_layout.addWidget(self.time_label_start)
@@ -50,11 +52,11 @@ class TouchPlayerBar(QWidget):
 
         # -- Middle row: volume (left), buttons (right) --
         middle = QHBoxLayout()
-        middle.setSpacing(16)
+        middle.setSpacing(8)
 
         # Volume column
         vol_col = QVBoxLayout()
-        vol_col.setSpacing(6)
+        vol_col.setSpacing(4)
         self.volume_label = QLabel("30")
         self.volume_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
         self.volume_label.setAlignment(Qt.AlignCenter)
@@ -71,7 +73,7 @@ class TouchPlayerBar(QWidget):
 
         # Buttons column
         btn_col = QVBoxLayout()
-        btn_col.setSpacing(14)
+        btn_col.setSpacing(10)
 
         r1 = QHBoxLayout()
         r1.setSpacing(24)
@@ -100,6 +102,11 @@ class TouchPlayerBar(QWidget):
         r1.addStretch(1)
         btn_col.addLayout(r1)
 
+        # Stretch between the two rows so the media buttons hug the seek
+        # bar above and shuffle/fullscreen hug the EQ below — no dead
+        # space at the top or bottom of the cluster.
+        btn_col.addStretch(1)
+
         r2 = QHBoxLayout()
         r2.setSpacing(18)
         r2.addStretch(1)
@@ -121,7 +128,20 @@ class TouchPlayerBar(QWidget):
 
         buttons_wrapper = QWidget()
         buttons_wrapper.setLayout(btn_col)
-        middle.addWidget(buttons_wrapper, 0, Qt.AlignVCenter)
+        # Fixed width keeps the cluster hint-sized horizontally; Preferred
+        # height lets it fill the wedge's row so both rows hug their
+        # neighbours (seek bar above, EQ below).
+        buttons_wrapper.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+        middle.addWidget(buttons_wrapper)
+
+        middle.addStretch(1)
+
+        # Mirror the volume column's width on the right so the buttons are
+        # centered under the cover art (across the full panel width) instead
+        # of under the space to the right of the wedge.
+        self._btn_balance_spacer = QWidget()
+        self._btn_balance_spacer.setFixedWidth(self.wedge_volume.minimumWidth())
+        middle.addWidget(self._btn_balance_spacer)
 
         main_l.addLayout(middle, 3)
 
@@ -131,7 +151,7 @@ class TouchPlayerBar(QWidget):
         self._eq_layout = QHBoxLayout()
         self._eq_layout.setSpacing(10)
         self._eq_placeholder = QWidget()
-        self._eq_placeholder.setMinimumHeight(100)
+        self._eq_placeholder.setMinimumHeight(52)
         self._eq_placeholder.setMinimumWidth(80)
         self._eq_placeholder.setMaximumWidth(400)
         self._eq_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -139,6 +159,14 @@ class TouchPlayerBar(QWidget):
         main_l.addLayout(self._eq_layout)
 
         self.setLayout(main_l)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Keep the balancing spacer the same width as the wedge column so
+        # the media buttons stay horizontally centered under the cover art.
+        wedge_w = self.wedge_volume.width()
+        if wedge_w > 0 and self._btn_balance_spacer.width() != wedge_w:
+            self._btn_balance_spacer.setFixedWidth(wedge_w)
 
     def align_seek_row(self, image_x, image_width, panel_width):
         """Align the seek row so it spans exactly from the left edge of the

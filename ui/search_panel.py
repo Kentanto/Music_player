@@ -20,12 +20,17 @@ class SearchPanel(QWidget):
         self.search_bar.setObjectName("search_bar")
         self.search_bar.setPlaceholderText("Search YouTube...")
         self.search_bar.returnPressed.connect(self.on_search)
+        # Default (non-touch) height matches the 42px hamburger button;
+        # set_touch_mode() adjusts it when touch mode is toggled.
+        self.search_bar.setFixedHeight(42)
         layout.addWidget(self.search_bar)
         
         self.setLayout(layout)
     
     def set_touch_mode(self, enabled):
-        self.search_bar.setMinimumHeight(52 if enabled else 28)
+        # Exact height keeps the search bar perfectly aligned with the
+        # hamburger button next to it (42px normal, 52px touch).
+        self.search_bar.setFixedHeight(52 if enabled else 42)
     
     def on_search(self):
         query = self.search_bar.text().strip()

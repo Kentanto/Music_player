@@ -508,8 +508,6 @@ QSlider#fullscreenVolume[remoteHighlight="true"]::handle:horizontal {
 QPushButton#hamburgerBtn {
     font-size: 20px;
     padding: 4px 8px;
-    min-width: 42px;
-    min-height: 42px;
     border: 1px solid #404040;
     border-radius: 4px;
 }
