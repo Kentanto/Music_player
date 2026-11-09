@@ -311,8 +311,9 @@ class QueuePanel(QWidget):
         self.filter_input.setMinimumHeight(52 if enabled else 28)
         self.sort_combo.setMinimumHeight(52 if enabled else 28)
         self.sort_dir_btn.setFixedSize(64 if enabled else 28, 52 if enabled else 28)
-        # Floating scroll badge: a bit thicker in touch mode, slim normally.
-        self.scroll_badge.set_width(14 if enabled else 8)
+        # Floating scroll badge: roughly twice as thick in touch mode,
+        # slim in normal mode.
+        self.scroll_badge.set_width(28 if enabled else 8)
         # Force re-layout of all rows
         self._refresh_display()
 
