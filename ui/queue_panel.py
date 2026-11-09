@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QPushButton, QMenu, QStyledItemDelegate, QStyle,
 )
-from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl
+from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl, QTimer
 from PySide6.QtGui import QIcon, QPixmap, QColor, QFont, QPen, QPainter
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
@@ -121,8 +121,8 @@ class QueueItemDelegate(QStyledItemDelegate):
 
     def set_touch_mode(self, enabled):
         if enabled:
-            self.ICON_SIZE = 72
-            self.PADDING = 10
+            self.ICON_SIZE = 110
+            self.PADDING = 18
         else:
             self.ICON_SIZE = 40
             self.PADDING = 6
@@ -202,7 +202,14 @@ class QueueItemDelegate(QStyledItemDelegate):
         if data and data.get("count") is not None:
             title += f"  ({data.get('count', 0)} songs)"
 
-        font = QFont("Arial", 11 if self.ICON_SIZE >= 60 else 9, QFont.Bold)
+        is_touch = self.ICON_SIZE >= 60
+        title_px = 30 if is_touch else 12
+        sub_px = 24 if is_touch else 10
+        duration_w = 120 if is_touch else 50
+
+        font = QFont("Arial")
+        font.setPixelSize(title_px)
+        font.setBold(True)
         painter.setFont(font)
         painter.setPen(QColor("#ffffff"))
         title_rect = option.rect.adjusted(text_x, self.PADDING, -self.PADDING - duration_w, 0)
@@ -210,7 +217,7 @@ class QueueItemDelegate(QStyledItemDelegate):
 
         artist = str(data.get("artist") or "") if data else ""
         if artist:
-            font.setPointSize(10 if self.ICON_SIZE >= 60 else 8)
+            font.setPixelSize(sub_px)
             font.setBold(False)
             painter.setFont(font)
             painter.setPen(QColor("#b3b3b3"))
@@ -219,7 +226,7 @@ class QueueItemDelegate(QStyledItemDelegate):
 
         duration = _seconds_to_str(data.get("duration") if data else None)
         if duration:
-            font.setPointSize(10 if self.ICON_SIZE >= 60 else 8)
+            font.setPixelSize(sub_px)
             painter.setFont(font)
             painter.setPen(QColor("#888888"))
             dur_rect = option.rect.adjusted(0, self.PADDING, -self.PADDING, 0)
@@ -263,13 +270,16 @@ class QueuePanel(QWidget):
         delegate = self.list_widget.itemDelegate()
         if isinstance(delegate, QueueItemDelegate):
             delegate.set_touch_mode(enabled)
-        self.filter_input.setMinimumHeight(40 if enabled else 28)
+        self.filter_input.setMinimumHeight(52 if enabled else 28)
         self.sort_combo.setMinimumHeight(52 if enabled else 28)
         self.sort_dir_btn.setFixedSize(64 if enabled else 28, 52 if enabled else 28)
-        ss = ""
-        if enabled:
-            ss = "QScrollBar:vertical { width: 32px; }"
-        self.list_widget.verticalScrollBar().setStyleSheet(ss)
+        # Scrollbar auto-hide: width 32px touch / 20px normal, start hidden
+        width = 32 if enabled else 20
+        self._sb_hide_ss = self._make_scrollbar_ss(width, visible=False)
+        self._sb_show_ss = self._make_scrollbar_ss(width, visible=True)
+        sb = self.list_widget.verticalScrollBar()
+        sb.setStyleSheet(self._sb_hide_ss)
+        self._scrollbar_visible = False
         # Force re-layout of all rows
         self._refresh_display()
 
@@ -316,6 +326,17 @@ class QueuePanel(QWidget):
         self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        # Auto-hide scrollbar: hidden until user scrolls, stays visible for 1.5s
+        sb = self.list_widget.verticalScrollBar()
+        sb.setStyleSheet(self._make_scrollbar_ss(20, False))
+        self._scrollbar_visible = False
+        self._scroll_hide_timer = QTimer(self)
+        self._scroll_hide_timer.setInterval(1500)
+        self._scroll_hide_timer.setSingleShot(True)
+        self._scroll_hide_timer.timeout.connect(self._hide_scrollbar)
+        sb.valueChanged.connect(self._on_scroll_activity)
+
         self.list_widget.installEventFilter(self)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
         self.list_widget.itemClicked.connect(self.on_item_clicked)
@@ -485,16 +506,20 @@ class QueuePanel(QWidget):
         # middle" after a delete. scrollToBottom() makes Qt run the full
         # layout + geometry update first, so the scrollbar range is final
         # before we place it where it belongs.
-        self.list_widget.scrollToBottom()
-
-        if reset_scroll:
-            # New view (playlist opened): always start at the top. The layout
-            # is already final, so this can be done synchronously.
-            self.list_widget.scrollToTop()
-        elif not was_at_bottom:
-            # Keep the user where they were; scrollToBottom above already
-            # handled the "user was at the bottom" case.
-            scroll_bar.setValue(previous_scroll_value)
+        # Block signals so the auto-hide scrollbar does not flash on refresh.
+        scroll_bar.blockSignals(True)
+        try:
+            self.list_widget.scrollToBottom()
+            if reset_scroll:
+                # New view (playlist opened): always start at the top. The layout
+                # is already final, so this can be done synchronously.
+                self.list_widget.scrollToTop()
+            elif not was_at_bottom:
+                # Keep the user where they were; scrollToBottom above already
+                # handled the "user was at the bottom" case.
+                scroll_bar.setValue(previous_scroll_value)
+        finally:
+            scroll_bar.blockSignals(False)
 
         # Notify the controller whenever the user causes a re-order so
         # the playback queue stays synchronized with the visible list.
@@ -521,6 +546,33 @@ class QueuePanel(QWidget):
         if current is None:
             return
         self.item_previewed.emit(current.data(Qt.UserRole))
+
+    @staticmethod
+    def _make_scrollbar_ss(width, visible):
+        handle_color = "#606060" if visible else "transparent"
+        return (
+            f"QScrollBar:vertical {{ background-color: transparent; width: {width}px; border: none; }}"
+            f"QScrollBar::handle:vertical {{ background-color: {handle_color}; min-height: 48px; border-radius: 12px; margin: 3px; }}"
+            "QScrollBar::handle:vertical:hover { background-color: #1db954; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; width: 0px; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }"
+        )
+
+    def _on_scroll_activity(self, value=None):
+        if not getattr(self, '_scrollbar_visible', False):
+            sb = self.list_widget.verticalScrollBar()
+            ss = getattr(self, '_sb_show_ss', self._make_scrollbar_ss(24, True))
+            sb.setStyleSheet(ss)
+            self._scrollbar_visible = True
+        self._scroll_hide_timer.stop()
+        self._scroll_hide_timer.start()
+
+    def _hide_scrollbar(self):
+        if getattr(self, '_scrollbar_visible', False):
+            sb = self.list_widget.verticalScrollBar()
+            ss = getattr(self, '_sb_hide_ss', self._make_scrollbar_ss(24, False))
+            sb.setStyleSheet(ss)
+            self._scrollbar_visible = False
 
     def eventFilter(self, watched, event):
         if watched is self.list_widget and event.type() == QEvent.KeyPress:

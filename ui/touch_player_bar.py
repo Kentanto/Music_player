@@ -25,22 +25,54 @@ class TouchPlayerBar(QWidget):
         main_l = QVBoxLayout()
         main_l.setContentsMargins(10, 14, 10, 14)
         main_l.setSpacing(16)
-        self.setMinimumHeight(380)
+        self.setMinimumHeight(560)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+
+        # -- Seek bar --
         self.seek_layout = QHBoxLayout()
         self.time_label_start = QLabel("0:00")
+        self.time_label_start.setStyleSheet("font-size: 16px; font-weight: bold; color: #c0c0c0;")
         self.time_label_end = QLabel("0:00")
+        self.time_label_end.setStyleSheet("font-size: 16px; font-weight: bold; color: #c0c0c0;")
         self.seek_slider = FocusAwareSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setObjectName("touchSeekSlider")
         self.seek_slider.setRange(0, 100)
-        self.seek_slider.setMinimumHeight(28)
-        self.seek_slider.setMaximumHeight(32)
+        self.seek_slider.setMinimumHeight(70)
+        self.seek_slider.setMaximumHeight(80)
         self.seek_slider.sliderMoved.connect(self._on_seek)
         self.seek_slider.focus_changed.connect(self._on_seek_focus)
         self.seek_layout.addWidget(self.time_label_start)
         self.seek_layout.addWidget(self.seek_slider, 1)
         self.seek_layout.addWidget(self.time_label_end)
         main_l.addLayout(self.seek_layout)
+
         main_l.addStretch(1)
+
+        # -- Middle row: volume (left), buttons (right) --
+        middle = QHBoxLayout()
+        middle.setSpacing(16)
+
+        # Volume column
+        vol_col = QVBoxLayout()
+        vol_col.setSpacing(6)
+        self.volume_label = QLabel("30")
+        self.volume_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff;")
+        self.volume_label.setAlignment(Qt.AlignCenter)
+        vol_col.addWidget(self.volume_label)
+
+        self.wedge_volume = WedgeVolumeSlider(Qt.Orientation.Vertical)
+        self.wedge_volume.setObjectName("wedgeVolume")
+        self.wedge_volume.valueChanged.connect(lambda v: self.volume_label.setText(str(v)))
+        self.wedge_volume.valueChanged.connect(self.volume_changed.emit)
+        vol_col.addWidget(self.wedge_volume, 1)
+        middle.addLayout(vol_col)
+
+        middle.addStretch(1)
+
+        # Buttons column
+        btn_col = QVBoxLayout()
+        btn_col.setSpacing(14)
+
         r1 = QHBoxLayout()
         r1.setSpacing(24)
         r1.addStretch(1)
@@ -66,7 +98,8 @@ class TouchPlayerBar(QWidget):
         self.next_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         r1.addWidget(self.next_btn)
         r1.addStretch(1)
-        main_l.addLayout(r1)
+        btn_col.addLayout(r1)
+
         r2 = QHBoxLayout()
         r2.setSpacing(18)
         r2.addStretch(1)
@@ -84,22 +117,27 @@ class TouchPlayerBar(QWidget):
         self.fullscreen_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         r2.addWidget(self.fullscreen_btn)
         r2.addStretch(1)
-        main_l.addLayout(r2)
-        main_l.addStretch(2)
-        r3 = QHBoxLayout()
-        r3.setSpacing(10)
-        self.wedge_volume = WedgeVolumeSlider()
-        self.wedge_volume.setObjectName("wedgeVolume")
-        self.wedge_volume.setMinimumHeight(60)
-        self.wedge_volume.setMaximumHeight(76)
-        self.wedge_volume.valueChanged.connect(self.volume_changed.emit)
-        r3.addWidget(self.wedge_volume, 1)
+        btn_col.addLayout(r2)
+
+        buttons_wrapper = QWidget()
+        buttons_wrapper.setLayout(btn_col)
+        middle.addWidget(buttons_wrapper, 0, Qt.AlignVCenter)
+
+        main_l.addLayout(middle, 3)
+
+        main_l.addStretch(1)
+
+        # -- EQ at bottom --
+        self._eq_layout = QHBoxLayout()
+        self._eq_layout.setSpacing(10)
         self._eq_placeholder = QWidget()
+        self._eq_placeholder.setMinimumHeight(100)
         self._eq_placeholder.setMinimumWidth(80)
         self._eq_placeholder.setMaximumWidth(400)
-        self._eq_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        r3.addWidget(self._eq_placeholder, 0)
-        main_l.addLayout(r3)
+        self._eq_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._eq_layout.addWidget(self._eq_placeholder, 1)
+        main_l.addLayout(self._eq_layout)
+
         self.setLayout(main_l)
 
     def align_seek_row(self, image_x, image_width, panel_width):
@@ -112,18 +150,19 @@ class TouchPlayerBar(QWidget):
         self.seek_layout.setContentsMargins(left_margin, 0, right_margin, 0)
 
     def set_eq_widget(self, widget):
-        if self._eq_widget is widget: return
+        if self._eq_widget is widget:
+            return
         if self._eq_widget is not None:
             self._eq_widget.setParent(None)
         self._eq_widget = widget
         if widget is not None:
             self._eq_placeholder.hide()
-            self.layout().itemAt(self.layout().count()-1).layout().addWidget(widget, 0)
+            self._eq_layout.addWidget(widget, 0)
 
     def remove_eq_widget(self):
         w = self._eq_widget
         if w is not None:
-            self.layout().itemAt(self.layout().count()-1).layout().removeWidget(w)
+            self._eq_layout.removeWidget(w)
             w.setParent(None)
             self._eq_widget = None
             self._eq_placeholder.show()
@@ -143,11 +182,13 @@ class TouchPlayerBar(QWidget):
 
     @staticmethod
     def _fmt(s):
-        if s < 0: s = 0
+        if s < 0:
+            s = 0
         return f"{int(s)//60}:{int(s)%60:02d}"
 
     def set_volume(self, value):
         self.wedge_volume.setValue(value)
+        self.volume_label.setText(str(value))
 
     def set_shuffle_state(self, enabled):
         self.shuffle_btn.blockSignals(True)
@@ -163,6 +204,7 @@ class TouchPlayerBar(QWidget):
         self.play_pause_btn.setIcon(QIcon(icon))
 
     def _on_seek_focus(self, focused):
-        color = "#1ed760" if focused else "#ffffff"
-        self.time_label_start.setStyleSheet(f"color: {color};")
-        self.time_label_end.setStyleSheet(f"color: {color};")
+        color = "#1ed760" if focused else "#c0c0c0"
+        ss = f"font-size: 16px; font-weight: bold; color: {color};"
+        self.time_label_start.setStyleSheet(ss)
+        self.time_label_end.setStyleSheet(ss)

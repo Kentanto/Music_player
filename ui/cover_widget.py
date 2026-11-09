@@ -99,11 +99,11 @@ class CoverWidget(QWidget):
 
     def _update_cover_size(self):
         if self._fill_pane:
-            # Panel mode: use full width, let it grow taller
+            # Panel mode: use full width, let height fill available space
             available_width = self.width()
             available_height = max(135, self.height() - 70)
-            cover_width = max(240, min(available_width, int(available_height * 16 / 9)))
-            cover_height = max(135, int(cover_width * 9 / 16))
+            cover_width = max(240, available_width)
+            cover_height = max(135, available_height)
         else:
             # Normal mode: also fill generously
             available_width = max(240, self.width() - 20)

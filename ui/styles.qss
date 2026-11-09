@@ -578,3 +578,34 @@ QMenu::item:selected {
     background-color: #1db954;
 }
 
+/* ── Touch seek slider — thick groove and fat handle ── */
+QSlider#touchSeekSlider::groove:horizontal {
+    background-color: #505050;
+    height: 20px;
+    border-radius: 10px;
+}
+
+QSlider#touchSeekSlider::sub-page:horizontal {
+    background-color: #1db954;
+    border-radius: 10px;
+}
+
+QSlider#touchSeekSlider::add-page:horizontal {
+    background-color: #282828;
+    border-radius: 10px;
+}
+
+QSlider#touchSeekSlider::handle:horizontal {
+    background-color: #1db954;
+    border: 2px solid #1ed760;
+    width: 45px;
+    height: 45px;
+    margin: -12px 0;
+    border-radius: 22px;
+}
+
+QSlider#touchSeekSlider::handle:horizontal:hover {
+    background-color: #35c96a;
+    border-color: #75e39a;
+}
+
