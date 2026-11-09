@@ -119,6 +119,16 @@ class QueueItemDelegate(QStyledItemDelegate):
         self._default_icon = QIcon.fromTheme("audio-x-generic")
         self._thumb_cache = {}
 
+    def set_touch_mode(self, enabled):
+        if enabled:
+            self.ICON_SIZE = 72
+            self.PADDING = 10
+        else:
+            self.ICON_SIZE = 40
+            self.PADDING = 6
+        parent = self.parent()
+        if parent:
+            parent.viewport().update()
     def _thumb_pixmap(self, thumbnail, list_widget):
         if thumbnail in self._thumb_cache:
             return self._thumb_cache[thumbnail]
@@ -192,7 +202,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         if data and data.get("count") is not None:
             title += f"  ({data.get('count', 0)} songs)"
 
-        font = QFont("Arial", 9, QFont.Bold)
+        font = QFont("Arial", 11 if self.ICON_SIZE >= 60 else 9, QFont.Bold)
         painter.setFont(font)
         painter.setPen(QColor("#ffffff"))
         title_rect = option.rect.adjusted(text_x, self.PADDING, -self.PADDING - duration_w, 0)
@@ -200,16 +210,16 @@ class QueueItemDelegate(QStyledItemDelegate):
 
         artist = str(data.get("artist") or "") if data else ""
         if artist:
-            font.setPointSize(8)
+            font.setPointSize(10 if self.ICON_SIZE >= 60 else 8)
             font.setBold(False)
             painter.setFont(font)
             painter.setPen(QColor("#b3b3b3"))
-            artist_rect = option.rect.adjusted(text_x, self.PADDING + 18, -self.PADDING - duration_w, 0)
+            artist_rect = option.rect.adjusted(text_x, self.PADDING + self.ICON_SIZE // 2, -self.PADDING - duration_w, 0)
             painter.drawText(artist_rect, Qt.AlignLeft | Qt.AlignTop, artist)
 
         duration = _seconds_to_str(data.get("duration") if data else None)
         if duration:
-            font.setPointSize(8)
+            font.setPointSize(10 if self.ICON_SIZE >= 60 else 8)
             painter.setFont(font)
             painter.setPen(QColor("#888888"))
             dur_rect = option.rect.adjusted(0, self.PADDING, -self.PADDING, 0)
@@ -230,6 +240,7 @@ class QueuePanel(QWidget):
     queue_next_requested = Signal(object)
     add_to_playlist_requested = Signal(object)
     remove_requested = Signal(object)
+    soft_remove_requested = Signal(object)
     rename_requested = Signal(object)
     delete_playlist_requested = Signal(object)
     playback_order_changed = Signal(list)
@@ -244,7 +255,23 @@ class QueuePanel(QWidget):
         self._reset_scroll_on_refresh = False
         self._commit_index = 2  # "Date Added"
         self._reverse = True
+        self._touch_mode = False
         self.init_ui()
+
+    def set_touch_mode(self, enabled):
+        self._touch_mode = bool(enabled)
+        delegate = self.list_widget.itemDelegate()
+        if isinstance(delegate, QueueItemDelegate):
+            delegate.set_touch_mode(enabled)
+        self.filter_input.setMinimumHeight(40 if enabled else 28)
+        self.sort_combo.setMinimumHeight(52 if enabled else 28)
+        self.sort_dir_btn.setFixedSize(64 if enabled else 28, 52 if enabled else 28)
+        ss = ""
+        if enabled:
+            ss = "QScrollBar:vertical { width: 32px; }"
+        self.list_widget.verticalScrollBar().setStyleSheet(ss)
+        # Force re-layout of all rows
+        self._refresh_display()
 
     def init_ui(self):
         layout = QVBoxLayout()
@@ -513,8 +540,24 @@ class QueuePanel(QWidget):
         for i, item in enumerate(self.items_data):
             if (item.get("file_path") or item.get("url")) == url:
                 self.items_data.pop(i)
-                self.list_widget.takeItem(i)
+                widget_item = self.list_widget.takeItem(i)
+                if widget_item:
+                    del widget_item
+                # Adjust delegate current index if needed
+                delegate = self.list_widget.itemDelegate()
+                if hasattr(delegate, "_current_index"):
+                    if delegate._current_index == i:
+                        delegate._current_index = -1
+                    elif delegate._current_index > i:
+                        delegate._current_index -= 1
                 return
+
+    def soft_remove_item(self, item_data):
+        """Remove from visible queue without deleting the underlying file.
+        The song will re-appear when the playlist is refreshed."""
+        url = item_data.get("file_path") or item_data.get("url")
+        self.remove_item_by_url(url)
+        self.soft_remove_requested.emit(item_data)
 
     def _show_context_menu(self, point):
         item = self.list_widget.itemAt(point)

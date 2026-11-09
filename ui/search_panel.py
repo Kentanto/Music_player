@@ -24,6 +24,9 @@ class SearchPanel(QWidget):
         
         self.setLayout(layout)
     
+    def set_touch_mode(self, enabled):
+        self.search_bar.setMinimumHeight(52 if enabled else 28)
+    
     def on_search(self):
         query = self.search_bar.text().strip()
         if query:

@@ -159,6 +159,14 @@ class MusicAppController:
         saved_shuffle = get_app_setting("shuffle_enabled", "False")
         self.player.shuffle_enabled = saved_shuffle.lower() == "true"
         self._publish_shuffle_state(self.player.shuffle_enabled)
+
+        # Restore touch-panel mode from DB
+        saved_touch = get_app_setting("touch_mode", "False")
+        if saved_touch.lower() == "true":
+            self.window.apply_touch_mode(True)
+        self.window.touch_mode_changed.connect(
+            lambda enabled: set_app_setting("touch_mode", str(bool(enabled)))
+        )
         
         # Restore the last playlist or show playlists first
         self._restore_last_view()
@@ -180,7 +188,7 @@ class MusicAppController:
         if duration_ms > 0:
             position_fraction = position_ms / duration_ms
             self.window.update_player_time(position_ms / 1000, duration_ms / 1000)
-            self.window.player_bar.set_seek_position(position_fraction)
+            self.window.set_seek_position(position_fraction)
             self.window.fullscreen_player.set_time(position_ms / 1000, duration_ms / 1000)
             self.window.fullscreen_player.set_seek_position(position_fraction)
     
@@ -194,7 +202,7 @@ class MusicAppController:
     def on_player_state_changed(self, state):
         """Update UI button state when playback changes."""
         is_playing = state == self.player.player.PlaybackState.PlayingState
-        self.window.player_bar.set_play_pause_state(is_playing)
+        self.window.set_play_pause_state(is_playing)
         self.window.fullscreen_player.set_play_pause_state(is_playing)
         if self.mpris:
             if state == self.player.player.PlaybackState.PlayingState:
@@ -604,7 +612,7 @@ class MusicAppController:
         """Mirror the shuffle state everywhere: bars, fullscreen, sort mode,
         MPRIS and the saved setting."""
         enabled = bool(enabled)
-        self.window.player_bar.set_shuffle_state(enabled)
+        self.window.set_shuffle_state(enabled)
         self.window.fullscreen_player.set_shuffle_state(enabled)
         self.window.queue_panel.set_sort_mode(
             "Shuffled" if enabled else "Date Added", reverse=True
@@ -1247,7 +1255,7 @@ class MusicAppController:
     def handle_volume_change(self, value):
         """Update player volume and remember it in the database"""
         self.player.set_volume(value)
-        self.window.player_bar.set_volume(value)
+        self.window.set_volume(value)
         self.window.fullscreen_player.set_volume(value)
         set_app_setting("volume", int(value))
         if self.mpris:
@@ -1255,13 +1263,19 @@ class MusicAppController:
 
     def handle_volume_up(self):
         """Bump volume up by 5."""
-        slider = self.window.player_bar.volume_slider
-        slider.setValue(min(100, slider.value() + 5))
+        if self.window._touch_mode:
+            current = self.window.touch_player_bar.wedge_volume.value()
+        else:
+            current = self.window.player_bar.volume_slider.value()
+        self.handle_volume_change(min(100, current + 5))
 
     def handle_volume_down(self):
         """Bump volume down by 5."""
-        slider = self.window.player_bar.volume_slider
-        slider.setValue(max(0, slider.value() - 5))
+        if self.window._touch_mode:
+            current = self.window.touch_player_bar.wedge_volume.value()
+        else:
+            current = self.window.player_bar.volume_slider.value()
+        self.handle_volume_change(max(0, current - 5))
 
     def handle_seek(self, position):
         """Seek to position (0.0-1.0)"""
@@ -2087,7 +2101,7 @@ class MusicAppController:
             self._now_playing_item = None
             self.window.cover_widget.set_track_info("No track selected")
             self.window.cover_widget.clear()
-            self.window.player_bar.set_track_info("No track selected")
+            self.window.set_track_info("No track selected")
             self.window.fullscreen_player.set_track_info("No track selected", "")
             self.window.fullscreen_player.set_cover_art(QPixmap())
             if self.mpris:
@@ -2129,7 +2143,7 @@ class MusicAppController:
         self.window.cover_widget.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self.window.fullscreen_player.set_track_info(title or "Unknown track", artist or "Unknown Artist")
         self._set_cover_art(artwork)
-        self.window.player_bar.set_track_info(title or "Unknown track")
+        self.window.set_track_info(title or "Unknown track")
         if self.mpris:
             self.mpris.set_track(
                 title or "Unknown track",
@@ -2576,7 +2590,30 @@ if __name__ == "__main__":
     else:
         print(f"Warning: styles.qss not found at {qss_path}")
     
-    window.show()
+    # Size the window for a 1920x1080 design target.
+    # Maximize only when the screen is exactly 1080p; otherwise
+    # open as a centered 1920x1080 window (client area).
+    screen = app.primaryScreen()
+    if screen:
+        geo = screen.availableGeometry()
+        if geo.width() == 1920 and geo.height() == 1080:
+            window.showMaximized()
+        elif geo.width() >= 1920 and geo.height() >= 1080:
+            window.resize(1920, 1080)
+            window.move(
+                geo.x() + (geo.width() - 1920) // 2,
+                geo.y() + (geo.height() - 1080) // 2,
+            )
+            window.show()
+        else:
+            window.show()
+    else:
+        window.show()
+
+    # In touch-panel mode the seek bar relies on the cover widget having
+    # real geometry; re-sync once after the window is fully laid out.
+    if window._touch_mode:
+        QTimer.singleShot(100, window._sync_seek_row)
 
     # Check linked Spotify playlists once for songs added since the last run.
     controller.start_spotify_sync()

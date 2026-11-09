@@ -32,6 +32,7 @@ class PlayerBar(QWidget):
         self.time_label_start = QLabel("0:00")
         self.seek_slider = FocusAwareSlider(Qt.Horizontal)
         self.seek_slider.setRange(0, 100)
+        self.seek_slider.setMaximumHeight(22)
         self.seek_slider.sliderMoved.connect(self.on_seek)  # Only on manual drag
         self.seek_slider.focus_changed.connect(self._on_seek_focus_changed)
         self.time_label_end = QLabel("0:00")

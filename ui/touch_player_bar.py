@@ -1,0 +1,168 @@
+"""Touch-friendly player bar used when touch-panel mode is enabled."""
+from PySide6.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLabel, QSizePolicy
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QIcon
+from .clickable_slider import FocusAwareSlider
+from .drawn_icons import next_icon, pause_icon, play_icon, prev_icon, shuffle_icon
+from .wedge_volume import WedgeVolumeSlider
+
+class TouchPlayerBar(QWidget):
+    play_pause_clicked = Signal()
+    next_clicked = Signal()
+    prev_clicked = Signal()
+    shuffle_toggled = Signal(bool)
+    volume_changed = Signal(int)
+    seek_requested = Signal(float)
+    fullscreen_requested = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._playing = False
+        self._eq_widget = None
+        self.init_ui()
+
+    def init_ui(self):
+        main_l = QVBoxLayout()
+        main_l.setContentsMargins(10, 14, 10, 14)
+        main_l.setSpacing(16)
+        self.setMinimumHeight(380)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.MinimumExpanding)
+        self.seek_layout = QHBoxLayout()
+        self.time_label_start = QLabel("0:00")
+        self.time_label_end = QLabel("0:00")
+        self.seek_slider = FocusAwareSlider(Qt.Orientation.Horizontal)
+        self.seek_slider.setRange(0, 100)
+        self.seek_slider.setMinimumHeight(28)
+        self.seek_slider.setMaximumHeight(32)
+        self.seek_slider.sliderMoved.connect(self._on_seek)
+        self.seek_slider.focus_changed.connect(self._on_seek_focus)
+        self.seek_layout.addWidget(self.time_label_start)
+        self.seek_layout.addWidget(self.seek_slider, 1)
+        self.seek_layout.addWidget(self.time_label_end)
+        main_l.addLayout(self.seek_layout)
+        main_l.addStretch(1)
+        r1 = QHBoxLayout()
+        r1.setSpacing(24)
+        r1.addStretch(1)
+        self.prev_btn = QPushButton()
+        self.prev_btn.setObjectName("touchPrevBtn")
+        self.prev_btn.setIconSize(QSize(40, 40))
+        self.prev_btn.setIcon(QIcon(prev_icon(40, "#ffffff")))
+        self.prev_btn.clicked.connect(self.prev_clicked.emit)
+        self.prev_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        r1.addWidget(self.prev_btn)
+        self.play_pause_btn = QPushButton()
+        self.play_pause_btn.setObjectName("touchPlayBtn")
+        self.play_pause_btn.setIconSize(QSize(52, 52))
+        self._update_pp_icon()
+        self.play_pause_btn.clicked.connect(self.play_pause_clicked.emit)
+        self.play_pause_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        r1.addWidget(self.play_pause_btn)
+        self.next_btn = QPushButton()
+        self.next_btn.setObjectName("touchNextBtn")
+        self.next_btn.setIconSize(QSize(40, 40))
+        self.next_btn.setIcon(QIcon(next_icon(40, "#ffffff")))
+        self.next_btn.clicked.connect(self.next_clicked.emit)
+        self.next_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        r1.addWidget(self.next_btn)
+        r1.addStretch(1)
+        main_l.addLayout(r1)
+        r2 = QHBoxLayout()
+        r2.setSpacing(18)
+        r2.addStretch(1)
+        self.shuffle_btn = QPushButton("Shuffle")
+        self.shuffle_btn.setObjectName("touchShuffleBtn")
+        self.shuffle_btn.setIconSize(QSize(28, 28))
+        self.shuffle_btn.setIcon(QIcon(shuffle_icon(28, "#ffffff")))
+        self.shuffle_btn.setCheckable(True)
+        self.shuffle_btn.toggled.connect(self.shuffle_toggled.emit)
+        self.shuffle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        r2.addWidget(self.shuffle_btn)
+        self.fullscreen_btn = QPushButton("Fullscreen")
+        self.fullscreen_btn.setObjectName("touchFullscreenBtn")
+        self.fullscreen_btn.clicked.connect(self.fullscreen_requested.emit)
+        self.fullscreen_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        r2.addWidget(self.fullscreen_btn)
+        r2.addStretch(1)
+        main_l.addLayout(r2)
+        main_l.addStretch(2)
+        r3 = QHBoxLayout()
+        r3.setSpacing(10)
+        self.wedge_volume = WedgeVolumeSlider()
+        self.wedge_volume.setObjectName("wedgeVolume")
+        self.wedge_volume.setMinimumHeight(60)
+        self.wedge_volume.setMaximumHeight(76)
+        self.wedge_volume.valueChanged.connect(self.volume_changed.emit)
+        r3.addWidget(self.wedge_volume, 1)
+        self._eq_placeholder = QWidget()
+        self._eq_placeholder.setMinimumWidth(80)
+        self._eq_placeholder.setMaximumWidth(400)
+        self._eq_placeholder.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        r3.addWidget(self._eq_placeholder, 0)
+        main_l.addLayout(r3)
+        self.setLayout(main_l)
+
+    def align_seek_row(self, image_x, image_width, panel_width):
+        """Align the seek row so it spans exactly from the left edge of the
+        cover image to the right edge of the cover image.
+        """
+        margins = self.layout().contentsMargins()
+        left_margin = max(0, image_x - margins.left())
+        right_margin = max(0, panel_width - margins.right() - image_x - image_width)
+        self.seek_layout.setContentsMargins(left_margin, 0, right_margin, 0)
+
+    def set_eq_widget(self, widget):
+        if self._eq_widget is widget: return
+        if self._eq_widget is not None:
+            self._eq_widget.setParent(None)
+        self._eq_widget = widget
+        if widget is not None:
+            self._eq_placeholder.hide()
+            self.layout().itemAt(self.layout().count()-1).layout().addWidget(widget, 0)
+
+    def remove_eq_widget(self):
+        w = self._eq_widget
+        if w is not None:
+            self.layout().itemAt(self.layout().count()-1).layout().removeWidget(w)
+            w.setParent(None)
+            self._eq_widget = None
+            self._eq_placeholder.show()
+        return w
+
+    def _on_seek(self, value):
+        self.seek_requested.emit(value / 100.0)
+
+    def set_seek_position(self, position):
+        self.seek_slider.blockSignals(True)
+        self.seek_slider.setValue(int(position * 100))
+        self.seek_slider.blockSignals(False)
+
+    def set_time_label(self, current, total):
+        self.time_label_start.setText(self._fmt(current))
+        self.time_label_end.setText(self._fmt(total))
+
+    @staticmethod
+    def _fmt(s):
+        if s < 0: s = 0
+        return f"{int(s)//60}:{int(s)%60:02d}"
+
+    def set_volume(self, value):
+        self.wedge_volume.setValue(value)
+
+    def set_shuffle_state(self, enabled):
+        self.shuffle_btn.blockSignals(True)
+        self.shuffle_btn.setChecked(enabled)
+        self.shuffle_btn.blockSignals(False)
+
+    def set_play_pause_state(self, playing):
+        self._playing = bool(playing)
+        self._update_pp_icon()
+
+    def _update_pp_icon(self):
+        icon = pause_icon(52, "#ffffff") if self._playing else play_icon(52, "#ffffff")
+        self.play_pause_btn.setIcon(QIcon(icon))
+
+    def _on_seek_focus(self, focused):
+        color = "#1ed760" if focused else "#ffffff"
+        self.time_label_start.setStyleSheet(f"color: {color};")
+        self.time_label_end.setStyleSheet(f"color: {color};")

@@ -32,7 +32,7 @@ finger is still the row that was pressed.
 
 import time
 
-from PySide6.QtCore import QEvent, QObject, QPersistentModelIndex, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPersistentModelIndex, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -74,9 +74,16 @@ FLING_HOLD_S = 0.12          # finger parked this long before lifting: no glide
 FLING_MAX_DT_MS = 100.0      # after a long stall: one sane catch-up hop only
 FLING_GRAB_SWALLOW_PXMS = 0.4  # grabbing a faster glide still swallows the tap
 
+# ── horizontal swipe on queue rows ──
+SWIPE_COMMIT_PX = 30     # finger must travel this far before we pick a direction
+SWIPE_THRESHOLD_PX = 50  # finger must travel this far to trigger the action
+
 
 class TouchGestureHandler(QObject):
     """Application-wide gesture filter; owned by the main window."""
+
+    queue_swipe_right = Signal(object)   # item_data
+    queue_swipe_left = Signal(object)    # item_data
 
     def __init__(self, window, parent=None):
         super().__init__(parent)
@@ -98,6 +105,11 @@ class TouchGestureHandler(QObject):
         self._press_in_fullscreen = False
         self._press_in_idle = False
         self._block_clicks_until = 0.0
+        # swipe tracking
+        self._swipe_dx = 0.0
+        self._swipe_dy = 0.0
+        self._swipe_horizontal = False
+        self._swipe_item_data = None
 
         self._hold_timer = QTimer(self)
         self._hold_timer.setSingleShot(True)
@@ -164,6 +176,18 @@ class TouchGestureHandler(QObject):
                 QScrollBar,
             ),
         )
+
+    def _swiped_item_data(self):
+        """Return the UserRole data for the row under the press."""
+        if self._press_index is None or not self._press_index.isValid():
+            return None
+        try:
+            item = self._scroll_view.item(self._press_index.row())
+            if item is not None:
+                return item.data(Qt.UserRole)
+        except RuntimeError:
+            pass
+        return None
 
     def _blocked_now(self):
         return time.monotonic() < self._block_clicks_until
@@ -435,11 +459,21 @@ class TouchGestureHandler(QObject):
             self._moved = True
             self._hold_timer.stop()  # "hold" only counts when not dragging
             if self._scroll_view is not None:
-                self._drag_scrolled = True
-                self._last_scroll_y = event.globalPosition().y()
-                self._last_scroll_time = time.monotonic()
-                self._scroll_speed = 0.0
-                self._scroll_residual = 0.0
+                # Decide direction: horizontal swipe or vertical scroll
+                if abs(delta.x()) > abs(delta.y()) + 6:
+                    self._swipe_horizontal = True
+                    self._swipe_item_data = self._swiped_item_data()
+                else:
+                    self._drag_scrolled = True
+                    self._last_scroll_y = event.globalPosition().y()
+                    self._last_scroll_time = time.monotonic()
+                    self._scroll_speed = 0.0
+                    self._scroll_residual = 0.0
+
+        if self._swipe_horizontal:
+            self._swipe_dx = delta.x()
+            self._swipe_dy = delta.y()
+            return True
 
         if self._drag_scrolled:
             y = event.globalPosition().y()
@@ -481,8 +515,19 @@ class TouchGestureHandler(QObject):
         if not self._active:
             return False
 
+        # ── horizontal swipe on queue row ──
+        if self._swipe_horizontal and self._swipe_item_data is not None:
+            if abs(self._swipe_dx) >= SWIPE_THRESHOLD_PX:
+                self._block_clicks_until = time.monotonic() + CLICK_BLOCK_MS / 1000.0
+                if self._swipe_dx > 0:
+                    self.queue_swipe_right.emit(self._swipe_item_data)
+                else:
+                    self.queue_swipe_left.emit(self._swipe_item_data)
+                self._reset()
+                return True
+
         was_gesture = (
-            self._hold_fired or self._drag_scrolled or self._fling_stopped_by_press
+            self._hold_fired or self._drag_scrolled or self._fling_stopped_by_press or self._swipe_horizontal
         )
         if was_gesture:
             self._block_clicks_until = time.monotonic() + CLICK_BLOCK_MS / 1000.0
@@ -563,4 +608,8 @@ class TouchGestureHandler(QObject):
         self._fling_stopped_by_press = False
         self._press_in_fullscreen = False
         self._press_in_idle = False
+        self._swipe_dx = 0.0
+        self._swipe_dy = 0.0
+        self._swipe_horizontal = False
+        self._swipe_item_data = None
         self._hold_timer.stop()

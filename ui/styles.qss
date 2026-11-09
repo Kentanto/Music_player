@@ -502,3 +502,79 @@ QSlider#fullscreenVolume[remoteHighlight="true"]::handle:horizontal {
     background-color: #aaffaa;
     border: 1px solid #ffffff;
 }
+
+/* ── Touch panel hamburger & circular transport buttons ── */
+
+QPushButton#hamburgerBtn {
+    font-size: 20px;
+    padding: 4px 8px;
+    min-width: 42px;
+    min-height: 42px;
+    border: 1px solid #404040;
+    border-radius: 4px;
+}
+
+QPushButton#touchPrevBtn,
+QPushButton#touchNextBtn {
+    min-width: 88px;
+    max-width: 88px;
+    min-height: 88px;
+    max-height: 88px;
+    border-radius: 44px;
+    background-color: #282828;
+    border: 2px solid #505050;
+    padding: 0;
+}
+
+QPushButton#touchPrevBtn:hover,
+QPushButton#touchNextBtn:hover {
+    background-color: #1db954;
+    border-color: #1ed760;
+}
+
+QPushButton#touchPlayBtn {
+    min-width: 120px;
+    max-width: 120px;
+    min-height: 120px;
+    max-height: 120px;
+    border-radius: 60px;
+    background-color: #1db954;
+    color: #101010;
+    border: 3px solid #1ed760;
+    padding: 0;
+}
+
+QPushButton#touchPlayBtn:hover {
+    background-color: #35c96a;
+    border-color: #75e39a;
+}
+
+QPushButton#touchShuffleBtn,
+QPushButton#touchFullscreenBtn {
+    min-width: 200px;
+    min-height: 64px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: bold;
+    padding: 10px 20px;
+}
+
+QPushButton#touchShuffleBtn:checked {
+    background-color: #1db954;
+    border: 1px solid #1ed760;
+}
+
+/* ── Larger context-menu actions for touch ── */
+QMenu {
+    border: 1px solid #404040;
+}
+
+QMenu::item {
+    padding: 10px 24px;
+    font-size: 13px;
+}
+
+QMenu::item:selected {
+    background-color: #1db954;
+}
+

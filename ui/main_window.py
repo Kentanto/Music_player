@@ -3,6 +3,7 @@ import time
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QSplitter, QGridLayout,
     QApplication, QAbstractButton, QLineEdit, QListWidget, QSlider, QComboBox,
+    QPushButton, QMenu,
 )
 from PySide6.QtCore import Qt, Signal, QTimer, QEvent, QRect, QPoint
 from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence
@@ -12,6 +13,7 @@ from .sidebar import Sidebar
 from .search_panel import SearchPanel
 from .queue_panel import QueuePanel
 from .player_bar import PlayerBar
+from .touch_player_bar import TouchPlayerBar
 from .cover_widget import CoverWidget
 from .fullscreen_player import FullscreenPlayer
 from .eq_visualizer import EQVisualizer
@@ -48,11 +50,13 @@ class MainWindow(QMainWindow):
     back_requested = Signal()
     stop_requested = Signal()
     select_requested = Signal()
+    touch_mode_changed = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Music Engine")
         self.resize(1200, 800)
+        self._touch_mode = False
         self.init_ui()
         self.toast_manager = ToastManager(self)
         self._selected_queue_item = None
@@ -64,7 +68,15 @@ class MainWindow(QMainWindow):
         # or mouse) closes the view, unless it just woke the idle EQ view
         # or landed on the safe bottom controls.
         self._touch_gestures = TouchGestureHandler(self)
+        self._touch_gestures.queue_swipe_right.connect(self._on_queue_swipe_right)
+        self._touch_gestures.queue_swipe_left.connect(self._on_queue_swipe_left)
         QApplication.instance().installEventFilter(self._touch_gestures)
+
+    def _on_queue_swipe_right(self, item_data):
+        self.queue_next_requested.emit(item_data)
+
+    def _on_queue_swipe_left(self, item_data):
+        self.queue_panel.soft_remove_item(item_data)
 
     def init_ui(self):
         central = QWidget()
@@ -72,44 +84,82 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(5, 5, 5, 5)
         main_layout.setSpacing(5)
 
-        top_layout = QHBoxLayout()
-        self.sidebar = Sidebar()
-        top_layout.addWidget(self.sidebar, 0)
+        # ── Top bar: search + hamburger, lives above the queue in the right panel.
+        # This lets the left panel (cover art) reach the very top of the window.
+        self.top_bar = QWidget()
+        top_layout = QHBoxLayout(self.top_bar)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(8)
 
-        middle_layout = QVBoxLayout()
+        # Spacer is hidden; the search bar fills the full top row of the right panel.
+        self._search_spacer = QWidget()
+        self._search_spacer.setFixedWidth(0)
+        self._search_spacer.hide()
+        top_layout.addWidget(self._search_spacer)
+
         self.search_panel = SearchPanel()
-        middle_layout.addWidget(self.search_panel, 0)
+        top_layout.addWidget(self.search_panel, 1)
 
+        self.hamburger_btn = QPushButton("☰")
+        self.hamburger_btn.setObjectName("hamburgerBtn")
+        self.hamburger_btn.setFixedSize(42, 42)
+        self.hamburger_btn.clicked.connect(self._show_hamburger_menu)
+        top_layout.addWidget(self.hamburger_btn)
+
+        # ── Center: left panel (cover + touch controls) + queue ──
         center_splitter = QSplitter(Qt.Horizontal)
-        self.cover_widget = CoverWidget()
-        center_splitter.addWidget(self.cover_widget)
-        self.queue_panel = QueuePanel()
-        center_splitter.addWidget(self.queue_panel)
-        center_splitter.setSizes([300, 400])
-        middle_layout.addWidget(center_splitter, 1)
-        top_layout.addLayout(middle_layout, 1)
-        main_layout.addLayout(top_layout, 1)
 
+        self.left_panel = QWidget()
+        self.left_panel.setMinimumWidth(420)
+        left_layout = QVBoxLayout(self.left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+
+        self.cover_widget = CoverWidget()
+        left_layout.addWidget(self.cover_widget, 1)
+
+        self.touch_player_bar = TouchPlayerBar()
+        self.touch_player_bar.hide()
+        left_layout.addWidget(self.touch_player_bar, 0)
+
+        center_splitter.addWidget(self.left_panel)
+
+        # Right pane: top bar above the queue
+        self.right_panel = QWidget()
+        right_layout = QVBoxLayout(self.right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(5)
+        right_layout.addWidget(self.top_bar, 0)
+        self.queue_panel = QueuePanel()
+        right_layout.addWidget(self.queue_panel, 1)
+        center_splitter.addWidget(self.right_panel)
+
+        center_splitter.setSizes([480, 520])
+        main_layout.addWidget(center_splitter, 1)
+
+        # ── Normal-mode player bar: full width at the bottom, outside the
+        # thumbnail column so it can never force the column wide. Touch
+        # mode swaps it for the touch bar and hides this one. ──
         self.player_bar = PlayerBar()
         self.eq_visualizer = EQVisualizer(self.player_bar)
         self.player_bar.controls_layout.addWidget(self.eq_visualizer, 1)
+        self._eq_stretch_added = True
         self.player_bar.controls_layout.addStretch()
         main_layout.addWidget(self.player_bar, 0)
+
+        # Sidebar lives for signals but is never shown
+        self.sidebar = Sidebar()
+        self.sidebar.hide()
 
         self.fullscreen_player = FullscreenPlayer(self)
 
         self._remote_highlighted = None
-        # True while the highlighted widget is a text field the user has
-        # clicked into or typed in — the idle-clear must not steal its focus.
         self._remote_keep_focus = False
         self._remote_clear_timer = QTimer(self)
         self._remote_clear_timer.setSingleShot(True)
         self._remote_clear_timer.setInterval(8000)
         self._remote_clear_timer.timeout.connect(self.clear_remote_highlight)
 
-        # Dedupe gate: CEC and keyboard evdev can both fire for the same
-        # remote button.  Drop duplicate navigations/activations arriving
-        # within this window (seconds).
         self._navigate_dedupe_window = 0.080
         self._last_navigate_dir = None
         self._last_navigate_time = 0.0
@@ -118,9 +168,101 @@ class MainWindow(QMainWindow):
 
         central.setLayout(main_layout)
         self.setCentralWidget(central)
+        # Prevent the window from shrinking so much that touch controls disappear
+        self.setMinimumSize(960, 620)
+
+    def _show_hamburger_menu(self):
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            "QMenu { border: 2px solid #a0a0a0; background-color: #282828; padding: 4px; margin: 2px; }"
+            "QMenu::item { padding: 10px 24px; font-size: 13px; color: #ffffff; }"
+            "QMenu::item:selected { background-color: #1db954; }"
+            "QMenu::separator { background-color: #505050; height: 1px; margin: 4px 8px; }"
+        )
+        menu.addAction("📋 Playlists", self.sidebar.playlists_clicked.emit)
+        menu.addAction("➕ Add to Playlist", self.sidebar.add_to_playlist_clicked.emit)
+        menu.addAction("Import List", self.sidebar.import_list_clicked.emit)
+        menu.addAction("Link Spotify", self.sidebar.link_spotify_clicked.emit)
+        menu.addAction("Failed Songs", self.sidebar.view_failures_clicked.emit)
+        menu.addAction("🔗 Network Sync", self.sidebar.network_sync_clicked.emit)
+        menu.addSeparator()
+        touch_action = menu.addAction("Touch Panel Mode")
+        touch_action.setCheckable(True)
+        touch_action.setChecked(self._touch_mode)
+        touch_action.triggered.connect(self._toggle_touch_mode)
+        # Align menu's right edge with the button's right edge so it doesn't
+        # clip past the window edge, and add a small gap below the button.
+        btn_rect = self.hamburger_btn.rect()
+        global_br = self.hamburger_btn.mapToGlobal(
+            QPoint(btn_rect.width(), btn_rect.height())
+        )
+        menu_width = menu.sizeHint().width()
+        pos = QPoint(global_br.x() - menu_width, global_br.y() + 2)
+        menu.popup(pos)
+
+    def _toggle_touch_mode(self, enabled):
+        self._touch_mode = bool(enabled)
+        self.apply_touch_mode(self._touch_mode)
+        self.touch_mode_changed.emit(self._touch_mode)
+
+    def apply_touch_mode(self, enabled):
+        self._touch_mode = bool(enabled)
+        self.queue_panel.set_touch_mode(enabled)
+        self.search_panel.set_touch_mode(enabled)
+        self.cover_widget.set_fill_pane(enabled)
+        # Match hamburger size to search bar height in touch mode
+        self.hamburger_btn.setFixedSize(52 if enabled else 42, 52 if enabled else 42)
+        if enabled:
+            # Move EQ from normal → touch
+            if self.eq_visualizer.parentWidget() is self.player_bar:
+                self.player_bar.controls_layout.removeWidget(self.eq_visualizer)
+                self.eq_visualizer.setParent(None)
+                if self._eq_stretch_added:
+                    item = self.player_bar.controls_layout.takeAt(
+                        self.player_bar.controls_layout.count() - 1
+                    )
+                    if item:
+                        del item
+                    self._eq_stretch_added = False
+                self.touch_player_bar.set_eq_widget(self.eq_visualizer)
+            self.player_bar.hide()
+            self.touch_player_bar.show()
+        else:
+            # Move EQ from touch → normal
+            w = self.touch_player_bar.remove_eq_widget()
+            if w is not None:
+                self.player_bar.controls_layout.addWidget(w, 1)
+                self.player_bar.controls_layout.addStretch()
+                self._eq_stretch_added = True
+            self.touch_player_bar.hide()
+            self.player_bar.show()
+        self._sync_seek_row()
+        self.update()
+
+    def _on_cover_geometry(self, image_x, image_width):
+        """Keep the touch seek bar edge to edge with the artwork."""
+        if self._touch_mode:
+            self.touch_player_bar.align_seek_row(
+                image_x, image_width, self.cover_widget.width()
+            )
+
+    def _sync_seek_row(self):
+        panel_width = self.cover_widget.width()
+        if panel_width <= 0:
+            return
+        self.touch_player_bar.align_seek_row(
+            self.cover_widget.cover_label_x,
+            self.cover_widget.cover_label_w,
+            panel_width,
+        )
+
+    def _update_search_spacer(self):
+        pass
 
     def connect_signals(self):
         self.search_panel.search_requested.connect(self.search_requested.emit)
+        # Keep the touch seek bar edge to edge with the artwork
+        self.cover_widget.cover_geometry_changed.connect(self._on_cover_geometry)
         self.queue_panel.item_selected.connect(self.on_queue_item_selected)
         self.queue_panel.item_previewed.connect(self.on_queue_item_selected)
         self.queue_panel.item_double_clicked.connect(self.on_queue_item_double_clicked)
@@ -133,6 +275,14 @@ class MainWindow(QMainWindow):
         self.player_bar.volume_changed.connect(self.volume_changed.emit)
         self.player_bar.seek_requested.connect(self.seek_requested.emit)
         self.player_bar.fullscreen_requested.connect(self.fullscreen_requested.emit)
+        # Touch player bar mirrors the same signals
+        self.touch_player_bar.play_pause_clicked.connect(self.play_pause_track.emit)
+        self.touch_player_bar.next_clicked.connect(self.next_track.emit)
+        self.touch_player_bar.prev_clicked.connect(self.prev_track.emit)
+        self.touch_player_bar.shuffle_toggled.connect(self.shuffle_toggled.emit)
+        self.touch_player_bar.volume_changed.connect(self.volume_changed.emit)
+        self.touch_player_bar.seek_requested.connect(self.seek_requested.emit)
+        self.touch_player_bar.fullscreen_requested.connect(self.fullscreen_requested.emit)
         self.fullscreen_player.seek_requested.connect(self.seek_requested.emit)
         self.sidebar.add_to_playlist_clicked.connect(self.add_to_playlist.emit)
         self.sidebar.import_list_clicked.connect(self.import_list_requested.emit)
@@ -311,26 +461,34 @@ class MainWindow(QMainWindow):
                 self.fullscreen_player.shuffle_button,
                 self.fullscreen_player.volume_slider,
             ]
-        return [
+        base = [
             self.search_panel.search_bar,
-            self.sidebar.playlists_btn,
-            self.sidebar.add_to_playlist_btn,
-            self.sidebar.import_list_btn,
-            self.sidebar.link_spotify_btn,
-            self.sidebar.view_failures_btn,
-            self.sidebar.network_sync_btn,
             self.cover_widget,
             self.queue_panel.filter_input,
             self.queue_panel.sort_combo,
             self.queue_panel.list_widget,
-            self.player_bar.seek_slider,
-            self.player_bar.prev_btn,
-            self.player_bar.play_pause_btn,
-            self.player_bar.next_btn,
-            self.player_bar.shuffle_btn,
-            self.player_bar.fullscreen_btn,
-            self.player_bar.volume_slider,
         ]
+        if self._touch_mode:
+            base.extend([
+                self.touch_player_bar.seek_slider,
+                self.touch_player_bar.prev_btn,
+                self.touch_player_bar.play_pause_btn,
+                self.touch_player_bar.next_btn,
+                self.touch_player_bar.shuffle_btn,
+                self.touch_player_bar.fullscreen_btn,
+                self.touch_player_bar.wedge_volume,
+            ])
+        else:
+            base.extend([
+                self.player_bar.seek_slider,
+                self.player_bar.prev_btn,
+                self.player_bar.play_pause_btn,
+                self.player_bar.next_btn,
+                self.player_bar.shuffle_btn,
+                self.player_bar.fullscreen_btn,
+                self.player_bar.volume_slider,
+            ])
+        return base
 
     def _fullscreen_nav_rows(self):
         """Explicit row grid for fullscreen — avoids broken spatial math on overlays."""
@@ -752,6 +910,8 @@ class MainWindow(QMainWindow):
             if "volume" in name.lower():
                 return "slider[volume]"
             return "slider[seek]"
+        if hasattr(target, "valueChanged") and "wedge" in target.objectName().lower():
+            return "wedge[volume]"
         if isinstance(target, CoverWidget):
             return "cover_art"
         return target.objectName() or target.__class__.__name__
@@ -827,6 +987,23 @@ class MainWindow(QMainWindow):
 
     def update_player_time(self, current, total):
         self.player_bar.set_time_label(current, total)
+        self.touch_player_bar.set_time_label(current, total)
 
     def set_volume(self, value):
         self.player_bar.set_volume(value)
+        self.touch_player_bar.set_volume(value)
+
+    def set_seek_position(self, position):
+        self.player_bar.set_seek_position(position)
+        self.touch_player_bar.set_seek_position(position)
+
+    def set_play_pause_state(self, playing):
+        self.player_bar.set_play_pause_state(playing)
+        self.touch_player_bar.set_play_pause_state(playing)
+
+    def set_shuffle_state(self, enabled):
+        self.player_bar.set_shuffle_state(enabled)
+        self.touch_player_bar.set_shuffle_state(enabled)
+
+    def set_track_info(self, title):
+        self.player_bar.set_track_info(title)

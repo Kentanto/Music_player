@@ -1,21 +1,28 @@
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QSizePolicy
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QPixmap
 
 
 class CoverWidget(QWidget):
     """Displays current track: cover art, title, artist"""
-    
+
+    cover_geometry_changed = Signal(int, int)  # cover_label_x, cover_label_width
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._cover_pixmap = QPixmap()
+        self._fill_pane = True
         self.init_ui()
-    
+
     def init_ui(self):
         layout = QVBoxLayout()
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setAlignment(Qt.AlignCenter)
-        
+        if self._fill_pane:
+            layout.setContentsMargins(0, 0, 0, 0)
+        else:
+            layout.setContentsMargins(10, 10, 10, 10)
+        layout.setAlignment(Qt.AlignHCenter)
+        layout.setSpacing(6)
+
         # Let the artwork fill the available pane instead of letterboxing.
         self.cover_label = QLabel("🎵")
         self.cover_label.setFont(QFont("Arial", 80))
@@ -26,7 +33,7 @@ class CoverWidget(QWidget):
             "QLabel { background-color: #121212; border: 1px solid #404040; }"
         )
         layout.addWidget(self.cover_label)
-        
+
         # Song title
         self.title_label = QLabel("No track selected")
         self.title_label.setFont(QFont("Arial", 14, QFont.Bold))
@@ -34,7 +41,7 @@ class CoverWidget(QWidget):
         self.title_label.setWordWrap(True)
         self.title_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         layout.addWidget(self.title_label)
-        
+
         # Artist
         self.artist_label = QLabel("")
         self.artist_label.setFont(QFont("Arial", 10))
@@ -42,16 +49,41 @@ class CoverWidget(QWidget):
         self.artist_label.setWordWrap(True)
         self.artist_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard)
         layout.addWidget(self.artist_label)
-        
+
         layout.addStretch()
-        
+
         self.setLayout(layout)
-    
+
+    @property
+    def cover_label_x(self):
+        return self.cover_label.x()
+
+    @property
+    def cover_label_w(self):
+        return self.cover_label.width()
+
+    def set_fill_pane(self, enabled):
+        """Switch between normal margins and full-pane fill mode (panel/touch)."""
+        self._fill_pane = bool(enabled)
+        layout = self.layout()
+        if enabled:
+            layout.setContentsMargins(0, 0, 0, 0)
+        else:
+            layout.setContentsMargins(10, 10, 10, 10)
+        self._update_cover_size()
+        self._fit_cover_art()
+        layout.activate()
+        self.update()
+        self._emit_geometry()
+
+    def _emit_geometry(self):
+        self.cover_geometry_changed.emit(self.cover_label_x, self.cover_label_w)
+
     def set_track_info(self, title, artist="Unknown Artist"):
         """Update display with track info"""
         self.title_label.setText(title)
         self.artist_label.setText(artist)
-    
+
     def set_cover_art(self, pixmap):
         """Set cover art image"""
         if pixmap and not pixmap.isNull():
@@ -63,13 +95,25 @@ class CoverWidget(QWidget):
         super().resizeEvent(event)
         self._update_cover_size()
         self._fit_cover_art()
+        self._emit_geometry()
 
     def _update_cover_size(self):
-        available_width = max(240, self.width() - 20)
-        available_height = max(135, self.height() - 100)
-        cover_width = min(available_width, int(available_height * 16 / 9))
-        cover_height = max(135, int(cover_width * 9 / 16))
+        if self._fill_pane:
+            # Panel mode: use full width, let it grow taller
+            available_width = self.width()
+            available_height = max(135, self.height() - 70)
+            cover_width = max(240, min(available_width, int(available_height * 16 / 9)))
+            cover_height = max(135, int(cover_width * 9 / 16))
+        else:
+            # Normal mode: also fill generously
+            available_width = max(240, self.width() - 20)
+            available_height = max(135, self.height() - 80)
+            cover_width = min(available_width, int(available_height * 16 / 9))
+            cover_height = max(135, int(cover_width * 9 / 16))
         self.cover_label.setFixedSize(cover_width, cover_height)
+        # Force the layout to recalculate the label's position now so
+        # _emit_geometry() reads an up-to-date x().
+        self.layout().activate()
 
     def _fit_cover_art(self):
         if self._cover_pixmap.isNull():
@@ -95,7 +139,7 @@ class CoverWidget(QWidget):
         self._cover_pixmap = QPixmap()
         self.cover_label.setPixmap(QPixmap())
         self.cover_label.setText("🎵")
-    
+
     def clear(self):
         """Clear the display"""
         self.title_label.setText("No track selected")
