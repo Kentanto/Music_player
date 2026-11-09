@@ -262,6 +262,10 @@ class _ScrollBadge(QWidget):
         self.setFixedHeight(max(28, int(handle_h)))
         origin = viewport.mapTo(self.parentWidget(), QPoint(0, 0))
         self.move(origin.x() + viewport.width() - self._w - 3, int(y))
+        # The list widget is re-parented by the layout after this badge is
+        # created, which stacks it ON TOP of the badge; raise so the badge
+        # always floats above the list content.
+        self.raise_()
 
     def paintEvent(self, _event):
         p = QPainter(self)
