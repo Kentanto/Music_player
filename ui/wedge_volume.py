@@ -20,9 +20,13 @@ class WedgeVolumeSlider(QWidget):
       The green fill is anchored at the bottom and grows upward as the
       volume rises.
     * Click or drag anywhere inside to set the volume.
+    * Accepts keyboard focus and takes part in remote/keyboard navigation
+      like a slider (the main window drives value changes once the wedge
+      is highlighted; the outline turns green while highlighted).
     """
 
     valueChanged = Signal(int)
+    focus_changed = Signal(bool)
 
     def __init__(self, orientation=Qt.Orientation.Horizontal, parent=None):
         super().__init__(parent)
@@ -40,6 +44,9 @@ class WedgeVolumeSlider(QWidget):
             self.setMaximumHeight(360)
             self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.setCursor(Qt.PointingHandCursor)
+        # Keyboard/remote navigation gives focus to the highlighted widget;
+        # without this the wedge could never receive it.
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     # ── public API ──
 
@@ -52,6 +59,21 @@ class WedgeVolumeSlider(QWidget):
 
     def value(self) -> int:
         return self._value
+
+    def is_remote_highlighted(self) -> bool:
+        return bool(self.property("remoteHighlight"))
+
+    # ── keyboard focus ──
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self.focus_changed.emit(True)
+        self.update()
+
+    def focusOutEvent(self, event):
+        super().focusOutEvent(event)
+        self.focus_changed.emit(False)
+        self.update()
 
     # ── mouse interaction ──
 
@@ -110,6 +132,14 @@ class WedgeVolumeSlider(QWidget):
         else:
             self._paint_vertical(painter, w, h, pad)
 
+    def _outline_pen(self) -> QPen:
+        """Grey outline normally, green while highlighted/focused by the
+        keyboard or remote navigation (QSS cannot style this custom-drawn
+        widget, so the highlight is painted here)."""
+        if self.is_remote_highlighted() or self.hasFocus():
+            return QPen(QColor("#1ed760"), 2)
+        return QPen(QColor(60, 60, 60), 1)
+
     def _paint_horizontal(self, painter, w, h, pad):
         left_h = max(3, h * 0.08)
         right_h = max(10, h * 0.82)
@@ -148,7 +178,7 @@ class WedgeVolumeSlider(QWidget):
             painter.drawPath(fill_path)
 
         # Outline stroke
-        painter.setPen(QPen(QColor(60, 60, 60), 1))
+        painter.setPen(self._outline_pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(outline)
 
@@ -202,7 +232,7 @@ class WedgeVolumeSlider(QWidget):
             painter.drawPath(fill_path)
 
         # Outline stroke
-        painter.setPen(QPen(QColor(60, 60, 60), 1))
+        painter.setPen(self._outline_pen())
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawPath(outline)
 

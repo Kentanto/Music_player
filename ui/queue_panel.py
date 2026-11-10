@@ -682,6 +682,29 @@ class QueuePanel(QWidget):
     def get_all_urls(self):
         return [item.get("file_path") or item.get("url") for item in self.items_data]
 
+    def scroll_to_current_track(self):
+        """Scroll the queue list so the currently playing song's row is
+        centered in the view.
+
+        Returns True when the playing track was found (and scrolled to),
+        False when nothing is playing or the track is not in the current
+        view (e.g. a different playlist/search result is shown).
+        """
+        source = self.current_item_source
+        if not source:
+            return False
+        for row in range(self.list_widget.count()):
+            item = self.list_widget.item(row)
+            data = item.data(Qt.UserRole) if item else None
+            if not data:
+                continue
+            if (data.get("file_path") or data.get("url")) == source:
+                self.list_widget.scrollToItem(
+                    item, QAbstractItemView.ScrollHint.PositionAtCenter
+                )
+                return True
+        return False
+
     def on_item_clicked(self, item):
         self.item_selected.emit(item.data(Qt.UserRole))
 

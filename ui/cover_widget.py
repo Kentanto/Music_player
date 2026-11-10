@@ -3,10 +3,46 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QPixmap
 
 
+class _ClickableCoverLabel(QLabel):
+    """Cover art label that reports taps/clicks.
+
+    Works for both the mouse and a touchscreen: Qt synthesizes mouse events
+    from touch input for widgets that do not handle touch themselves. A
+    press followed by a release that stayed basically in place counts as a
+    click; a drag away and back does not.
+    """
+
+    clicked = Signal()
+
+    CLICK_SLOP_PX = 12  # how far a "tap" may wander and still be a click
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._press_pos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._press_pos = event.position().toPoint()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._press_pos is not None:
+            press = self._press_pos
+            self._press_pos = None
+            if (press - event.position().toPoint()).manhattanLength() <= self.CLICK_SLOP_PX:
+                self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class CoverWidget(QWidget):
     """Displays current track: cover art, title, artist"""
 
     cover_geometry_changed = Signal(int, int)  # cover_label_x, cover_label_width
+    cover_clicked = Signal()  # tap/click on the cover art image
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -24,7 +60,7 @@ class CoverWidget(QWidget):
         layout.setSpacing(4)
 
         # Let the artwork fill the available pane instead of letterboxing.
-        self.cover_label = QLabel("🎵")
+        self.cover_label = _ClickableCoverLabel("🎵")
         self.cover_label.setFont(QFont("Arial", 80))
         self.cover_label.setAlignment(Qt.AlignCenter)
         self.cover_label.setMinimumSize(240, 135)
@@ -32,6 +68,10 @@ class CoverWidget(QWidget):
         self.cover_label.setStyleSheet(
             "QLabel { background-color: #121212; border: 1px solid #404040; }"
         )
+        # Hint that a tap/click on the artwork jumps the queue to the
+        # currently playing song.
+        self.cover_label.setCursor(Qt.PointingHandCursor)
+        self.cover_label.clicked.connect(self.cover_clicked.emit)
         layout.addWidget(self.cover_label)
 
         # Song title

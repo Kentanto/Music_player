@@ -373,18 +373,16 @@ class MusicAppController:
         return selected_url
 
     def handle_track_selected(self, item):
-        """Preview selected track metadata without changing playback.
+        """Selection only — never rewrite "now playing".
 
-        Only the main-window cover pane previews the selection — the player
-        bar and the fullscreen view stay locked to the track that is
-        actually playing, so browsing/clicking never rewrites "now playing".
+        The thumbnail, title, and artist must only change when a track
+        actually starts playing. So instead of previewing the selected
+        row, re-assert the current now-playing display: whatever is
+        really playing stays on the cover pane, player bar, fullscreen
+        view and MPRIS (and "No track selected" while nothing has ever
+        played).
         """
-        if not item or item.get("type") == "playlist":
-            return
-
-        title, artist, artwork = self._track_display_data(item)
-        self.window.cover_widget.set_track_info(title, artist)
-        self._set_cover_art(artwork, include_fullscreen=False)
+        self._update_now_playing()
     
     def handle_pause(self):
         self.player.pause()

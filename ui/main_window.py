@@ -14,6 +14,7 @@ from .search_panel import SearchPanel
 from .queue_panel import QueuePanel
 from .player_bar import PlayerBar
 from .touch_player_bar import TouchPlayerBar
+from .wedge_volume import WedgeVolumeSlider
 from .cover_widget import CoverWidget
 from .fullscreen_player import FullscreenPlayer
 from .eq_visualizer import EQVisualizer
@@ -256,6 +257,11 @@ class MainWindow(QMainWindow):
             panel_width,
         )
 
+    def _on_cover_clicked(self):
+        """Tap/click on the cover art thumbnail: auto-scroll the queue view
+        to the currently playing song so it is easy to find again."""
+        self.queue_panel.scroll_to_current_track()
+
     def _update_search_spacer(self):
         pass
 
@@ -263,6 +269,8 @@ class MainWindow(QMainWindow):
         self.search_panel.search_requested.connect(self.search_requested.emit)
         # Keep the touch seek bar edge to edge with the artwork
         self.cover_widget.cover_geometry_changed.connect(self._on_cover_geometry)
+        # Tap/click on the cover art jumps the queue view to the playing song
+        self.cover_widget.cover_clicked.connect(self._on_cover_clicked)
         self.queue_panel.item_selected.connect(self.on_queue_item_selected)
         self.queue_panel.item_previewed.connect(self.on_queue_item_selected)
         self.queue_panel.item_double_clicked.connect(self.on_queue_item_double_clicked)
@@ -357,7 +365,7 @@ class MainWindow(QMainWindow):
                 self._remote_clear_timer.start()
 
             # ── Layer check: slider adjust mode ──
-            if isinstance(target, QSlider) and self._slider_adjust_target is target:
+            if self._is_slider_like(target) and self._slider_adjust_target is target:
                 if key in (Qt.Key_Left, Qt.Key_Right):
                     self._adjust_slider(target, "left" if key == Qt.Key_Left else "right")
                     return True
@@ -425,8 +433,22 @@ class MainWindow(QMainWindow):
             return False
         return True
 
+    @staticmethod
+    def _is_slider_like(target):
+        """Targets that behave like a slider when activated/adjusted.
+
+        The touch-mode volume wedge is a custom-drawn widget, not a QSlider,
+        but it exposes value()/setValue() and must take part in the same
+        keyboard/remote "slider adjust" flow as the real sliders.
+        """
+        return isinstance(target, (QSlider, WedgeVolumeSlider))
+
     def _adjust_slider(self, slider, direction):
-        if slider is self.player_bar.volume_slider or slider is self.fullscreen_player.volume_slider:
+        if (
+            isinstance(slider, WedgeVolumeSlider)
+            or slider is self.player_bar.volume_slider
+            or slider is self.fullscreen_player.volume_slider
+        ):
             delta = -5 if direction == "left" else 5
             new_val = max(0, min(100, slider.value() + delta))
             slider.setValue(new_val)
@@ -840,8 +862,9 @@ class MainWindow(QMainWindow):
                 target.setFocus(Qt.OtherFocusReason)
                 target.selectAll()
 
-        elif isinstance(target, QSlider):
-            # Layer 2: enter slider adjust mode
+        elif self._is_slider_like(target):
+            # Layer 2: enter slider adjust mode (also covers the touch-mode
+            # volume wedge, which is not a QSlider)
             self._slider_adjust_target = target
             if self._should_highlight(target):
                 target.setProperty("remoteHighlight", True)

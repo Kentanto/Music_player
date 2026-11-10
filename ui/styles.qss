@@ -607,3 +607,42 @@ QSlider#touchSeekSlider::handle:horizontal:hover {
     border-color: #75e39a;
 }
 
+/* Keyboard / remote-navigation feedback on the touch panel.  The ID rules
+   above out-rank the generic QPushButton:focus / [remoteHighlight] rules,
+   so without these the green selected state is invisible. */
+QPushButton#touchPrevBtn:focus,
+QPushButton#touchNextBtn:focus,
+QPushButton#touchPrevBtn[remoteHighlight="true"],
+QPushButton#touchNextBtn[remoteHighlight="true"] {
+    border: 2px solid #1ed760;
+    background-color: #1b2a20;
+}
+
+QPushButton#touchPlayBtn:focus,
+QPushButton#touchPlayBtn[remoteHighlight="true"] {
+    border: 3px solid #aaffaa;
+    background-color: #1b2a20;
+}
+
+QPushButton#touchShuffleBtn:focus,
+QPushButton#touchFullscreenBtn:focus,
+QPushButton#touchShuffleBtn[remoteHighlight="true"],
+QPushButton#touchFullscreenBtn[remoteHighlight="true"] {
+    border: 1px solid #1ed760;
+    background-color: #1b2a20;
+}
+
+/* Touch seek slider — highlighted groove/handle while keyboard-navigated. */
+QSlider#touchSeekSlider[remoteHighlight="true"]::groove:horizontal {
+    background-color: #1b5e20;
+}
+
+QSlider#touchSeekSlider[remoteHighlight="true"]::sub-page:horizontal {
+    background-color: #aaffaa;
+}
+
+QSlider#touchSeekSlider[remoteHighlight="true"]::handle:horizontal {
+    background-color: #aaffaa;
+    border: 2px solid #ffffff;
+}
+

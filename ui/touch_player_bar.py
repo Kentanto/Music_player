@@ -66,6 +66,7 @@ class TouchPlayerBar(QWidget):
         self.wedge_volume.setObjectName("wedgeVolume")
         self.wedge_volume.valueChanged.connect(lambda v: self.volume_label.setText(str(v)))
         self.wedge_volume.valueChanged.connect(self.volume_changed.emit)
+        self.wedge_volume.focus_changed.connect(self._on_volume_focus)
         vol_col.addWidget(self.wedge_volume, 1)
         middle.addLayout(vol_col)
 
@@ -236,3 +237,7 @@ class TouchPlayerBar(QWidget):
         ss = f"font-size: 16px; font-weight: bold; color: {color};"
         self.time_label_start.setStyleSheet(ss)
         self.time_label_end.setStyleSheet(ss)
+
+    def _on_volume_focus(self, focused):
+        color = "#1ed760" if focused else "#ffffff"
+        self.volume_label.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {color};")
