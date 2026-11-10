@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QAbstractItemView, QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+    QAbstractItemView, QWidget, QApplication, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QLabel, QLineEdit, QComboBox, QPushButton, QMenu, QStyledItemDelegate, QStyle,
 )
 from PySide6.QtCore import QEvent, Qt, Signal, QSize, QUrl, QTimer, QPoint
@@ -239,17 +239,29 @@ class QueueItemDelegate(QStyledItemDelegate):
 
 
 class _ScrollBadge(QWidget):
-    """Floating pill that mirrors the list's scroll position.
+    """Floating pill that mirrors — and can drive — the list's scroll position.
 
-    Replaces the classic scrollbar: no track/column is reserved for it,
-    it is transparent to mouse/touch input (gestures pass through), and
-    it hides itself after scrolling stops.
+    Replaces the classic scrollbar: no track/column is reserved for it.
+    In touch mode it is a grabbable handle the finger can drag to scroll
+    the list; in normal mode it stays passive and see-through to input.
+    Either way it only appears while the list is actually being scrolled
+    and hides itself again once scrolling stops.
     """
+
+    drag_started = Signal()
+    drag_finished = Signal()
 
     def __init__(self, parent):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._w = 8
+        self._min_handle = 36
+        self._list_widget = None
+        self._track_h = 0
+        self._handle_h = 0
+        self._dragging = False
+        self._press_y = 0.0
+        self._press_value = 0
         self.setFixedWidth(self._w)
         self.hide()
 
@@ -257,8 +269,30 @@ class _ScrollBadge(QWidget):
         self._w = int(w)
         self.setFixedWidth(self._w)
 
+    def set_min_handle(self, h):
+        self._min_handle = int(h)
+
+    def min_handle(self):
+        return self._min_handle
+
+    def set_list_widget(self, list_widget):
+        self._list_widget = list_widget
+
+    def is_dragging(self):
+        return self._dragging
+
+    def _scrollbar(self):
+        if self._list_widget is None:
+            return None
+        try:
+            return self._list_widget.verticalScrollBar()
+        except RuntimeError:
+            return None  # the list was destroyed
+
     def reposition(self, viewport, handle_h, y):
         """Anchor the badge to the right edge of the list's viewport."""
+        self._track_h = viewport.height()
+        self._handle_h = int(handle_h)
         self.setFixedHeight(max(28, int(handle_h)))
         origin = viewport.mapTo(self.parentWidget(), QPoint(0, 0))
         self.move(origin.x() + viewport.width() - self._w - 3, int(y))
@@ -266,6 +300,57 @@ class _ScrollBadge(QWidget):
         # created, which stacks it ON TOP of the badge; raise so the badge
         # always floats above the list content.
         self.raise_()
+
+    # ---------- dragging the badge scrolls the list ----------
+
+    def mousePressEvent(self, event):
+        if event.button() != Qt.LeftButton:
+            event.ignore()
+            return
+        sb = self._scrollbar()
+        if sb is None:
+            event.ignore()
+            return
+        self._dragging = True
+        self._press_y = event.globalPosition().y()
+        self._press_value = sb.value()
+        self.setCursor(Qt.ClosedHandCursor)
+        self.drag_started.emit()
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            event.ignore()
+            return
+        sb = self._scrollbar()
+        if sb is None:
+            return
+        travel = self._track_h - self._handle_h
+        if travel <= 0:
+            return
+        dy = event.globalPosition().y() - self._press_y
+        span = max(1, sb.maximum())
+        new_value = self._press_value + (dy / travel) * span
+        sb.setValue(max(0, min(span, int(round(new_value)))))
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.LeftButton or not self._dragging:
+            event.ignore()
+            return
+        self._dragging = False
+        self.setCursor(Qt.OpenHandCursor)
+        self.drag_finished.emit()
+        event.accept()
+
+    def wheelEvent(self, event):
+        # Keep mouse-wheel scrolling working when the cursor happens to be
+        # over the badge: hand the wheel straight to the list below.
+        if self._list_widget is not None:
+            QApplication.sendEvent(self._list_widget.viewport(), event)
+            event.accept()
+        else:
+            event.ignore()
 
     def paintEvent(self, _event):
         p = QPainter(self)
@@ -311,9 +396,19 @@ class QueuePanel(QWidget):
         self.filter_input.setMinimumHeight(52 if enabled else 28)
         self.sort_combo.setMinimumHeight(52 if enabled else 28)
         self.sort_dir_btn.setFixedSize(64 if enabled else 28, 52 if enabled else 28)
-        # Floating scroll badge: roughly twice as thick in touch mode,
-        # slim in normal mode.
-        self.scroll_badge.set_width(28 if enabled else 8)
+        # Floating scroll badge: twice as thick and with a longer grab
+        # length in touch mode, slim in normal mode.
+        self.scroll_badge.set_width(56 if enabled else 8)
+        self.scroll_badge.set_min_handle(80 if enabled else 36)
+        # Touch mode turns the badge into a real scrollbar handle the
+        # finger can grab and drag. Normal mode keeps it see-through to
+        # mouse/touch input exactly as before.
+        self.scroll_badge.setAttribute(Qt.WA_TransparentForMouseEvents, not enabled)
+        self.scroll_badge.setCursor(Qt.OpenHandCursor if enabled else Qt.ArrowCursor)
+        # Either way the badge stays hidden until the list is actually
+        # scrolled; drop any currently visible one and let it come back
+        # with the new size on the next scroll.
+        self.scroll_badge.hide()
         # Force re-layout of all rows
         self._refresh_display()
 
@@ -364,13 +459,19 @@ class QueuePanel(QWidget):
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
 
         # Overlay scroll badge: appears over the content while scrolling and
-        # hides itself after 1.5s of no activity.
+        # hides itself after 1.5s of no activity. In touch mode it doubles
+        # as a grabbable scrollbar handle (see set_touch_mode).
         self.scroll_badge = _ScrollBadge(self)
+        self.scroll_badge.set_list_widget(self.list_widget)
         sb = self.list_widget.verticalScrollBar()
         self._scroll_hide_timer = QTimer(self)
         self._scroll_hide_timer.setInterval(1500)
         self._scroll_hide_timer.setSingleShot(True)
         self._scroll_hide_timer.timeout.connect(self._hide_scrollbar)
+        # A grabbed badge must never vanish under the finger: pause the
+        # auto-hide while it is held, give it a fresh countdown on release.
+        self.scroll_badge.drag_started.connect(self._scroll_hide_timer.stop)
+        self.scroll_badge.drag_finished.connect(self._scroll_hide_timer.start)
         sb.valueChanged.connect(self._on_scroll_activity)
         sb.rangeChanged.connect(lambda *_: self._update_scroll_badge())
 
@@ -558,6 +659,11 @@ class QueuePanel(QWidget):
         finally:
             scroll_bar.blockSignals(False)
 
+        # The signal block above kept the floating badge from hearing the
+        # scrollbar changes, so bring it back in sync right away — it only
+        # becomes visible again on the next actual scroll.
+        self._update_scroll_badge()
+
         # Notify the controller whenever the user causes a re-order so
         # the playback queue stays synchronized with the visible list.
         if from_sort_widget:
@@ -591,6 +697,9 @@ class QueuePanel(QWidget):
         self._scroll_hide_timer.start()
 
     def _hide_scrollbar(self):
+        if self.scroll_badge.is_dragging():
+            # A badge held by the finger must never vanish mid-drag.
+            return
         self.scroll_badge.hide()
 
     def _update_scroll_badge(self):
@@ -608,7 +717,8 @@ class QueuePanel(QWidget):
             return False
         page = max(1, sb.pageStep())
         total = sb.maximum() + page
-        handle_h = max(36, int(track_h * page / max(1, total)))
+        # Minimum grab length comes from the badge (longer in touch mode).
+        handle_h = max(self.scroll_badge.min_handle(), int(track_h * page / max(1, total)))
         handle_h = min(handle_h, track_h)
         span = max(1, sb.maximum())
         y = vp.mapTo(self, QPoint(0, 0)).y()
