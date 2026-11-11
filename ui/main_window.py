@@ -211,6 +211,10 @@ class MainWindow(QMainWindow):
         self.queue_panel.set_touch_mode(enabled)
         self.search_panel.set_touch_mode(enabled)
         self.cover_widget.set_fill_pane(enabled)
+        # The touch control cluster needs a wider pane; 640 guarantees the
+        # media circles and the shuffle/fullscreen pair always fit without
+        # the layout squeezing buttons into each other.
+        self.left_panel.setMinimumWidth(640 if enabled else 420)
         # Match hamburger size to search bar height in touch mode
         self.hamburger_btn.setFixedSize(52 if enabled else 42, 52 if enabled else 42)
         if enabled:

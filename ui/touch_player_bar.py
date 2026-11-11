@@ -70,8 +70,6 @@ class TouchPlayerBar(QWidget):
         vol_col.addWidget(self.wedge_volume, 1)
         middle.addLayout(vol_col)
 
-        middle.addStretch(1)
-
         # Buttons column
         btn_col = QVBoxLayout()
         btn_col.setSpacing(10)
@@ -118,24 +116,29 @@ class TouchPlayerBar(QWidget):
         self.shuffle_btn.setCheckable(True)
         self.shuffle_btn.toggled.connect(self.shuffle_toggled.emit)
         self.shuffle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        r2.addWidget(self.shuffle_btn)
+        r2.addWidget(self.shuffle_btn, 1)
         self.fullscreen_btn = QPushButton("Fullscreen")
         self.fullscreen_btn.setObjectName("touchFullscreenBtn")
         self.fullscreen_btn.clicked.connect(self.fullscreen_requested.emit)
         self.fullscreen_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        r2.addWidget(self.fullscreen_btn)
+        r2.addWidget(self.fullscreen_btn, 1)
         r2.addStretch(1)
         btn_col.addLayout(r2)
 
         buttons_wrapper = QWidget()
         buttons_wrapper.setLayout(btn_col)
-        # Fixed width keeps the cluster hint-sized horizontally; Preferred
-        # height lets it fill the wedge's row so both rows hug their
-        # neighbours (seek bar above, EQ below).
-        buttons_wrapper.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        middle.addWidget(buttons_wrapper)
-
-        middle.addStretch(1)
+        # The wrapper is the middle row's only stretch item, so it fills the
+        # space between the wedge column and the balancing spacer (the two
+        # are the same width, which keeps the cluster centred under the
+        # cover art). The rows inside it centre themselves with their own
+        # stretches. Keeping the wrapper growing matters: Qt pins a
+        # stretched item back to its size hint as soon as its trial share
+        # is below the hint, so competing side stretches would starve the
+        # cluster and squeeze its buttons into each other. Preferred height
+        # lets it fill the wedge's row so both rows hug their neighbours
+        # (seek bar above, EQ below).
+        buttons_wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        middle.addWidget(buttons_wrapper, 1)
 
         # Mirror the volume column's width on the right so the buttons are
         # centered under the cover art (across the full panel width) instead

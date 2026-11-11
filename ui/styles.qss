@@ -549,12 +549,17 @@ QPushButton#touchPlayBtn:hover {
 
 QPushButton#touchShuffleBtn,
 QPushButton#touchFullscreenBtn {
-    min-width: 200px;
+    /* Small floor so the pair can shrink on narrow panes instead of
+       overlapping each other; cap keeps them from turning into slabs
+       on very wide ones. min-width counts the content area only
+       (padding and border are added on top), so 88px -> 114px outer. */
+    min-width: 88px;
+    max-width: 260px;
     min-height: 64px;
     border-radius: 8px;
     font-size: 15px;
     font-weight: bold;
-    padding: 10px 20px;
+    padding: 10px 12px;
 }
 
 QPushButton#touchShuffleBtn:checked {
