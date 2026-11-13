@@ -26,13 +26,74 @@ CACHE_DIR = Path(tempfile.gettempdir()) / "music_platform_cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 
-def resolve_stream(url, max_duration=600):
-    """
-    Download audio to local cache and return file path (avoids stream expiration).
-    Skips videos longer than max_duration.
-    """
+def cached_stream_path(url):
+    """Return the already-downloaded local cache file for url, or None."""
     cached = get_cached_stream(url)
     if cached and os.path.exists(cached):
+        return cached
+    return None
+
+
+def probe_stream_url(url, max_duration=600):
+    """
+    Quickly resolve the direct network audio URL (no download) so playback
+    can start immediately while the full file downloads to the cache in
+    parallel.  Skips live streams and videos longer than max_duration.
+    """
+    ydl_opts = {
+        "format": "bestaudio[ext=m4a]/bestaudio[protocol^=https]/bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "retries": 2,
+        "js_runtimes": {"node": {}},
+        **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
+    }
+
+    ydl_opts.update(get_ytdlp_cookie_options())
+
+    # Send the same browser headers as every other yt-dlp call in the app.
+    ydl_opts.setdefault("http_headers", {}).update(YTDLP_HTTP_HEADERS)
+
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception:
+        return None
+
+    if not info or info.get("is_live"):
+        return None
+
+    duration = info.get("duration")
+    if duration and duration > max_duration:
+        print(f"Video too long ({duration}s > {max_duration}s), skipping", flush=True)
+        return None
+
+    # yt-dlp merges the chosen format into the info dict; its direct URL is
+    # what the player streams while the download runs.
+    stream_url = info.get("url")
+    if not stream_url:
+        # Fallback: pick a direct http audio format ourselves.
+        for fmt in reversed(info.get("formats") or []):
+            if not fmt.get("url"):
+                continue
+            if fmt.get("vcodec") not in (None, "none"):
+                continue
+            if (fmt.get("protocol") or "").lower().startswith("http"):
+                stream_url = fmt.get("url")
+                break
+    return stream_url or None
+
+
+def resolve_stream(url, max_duration=600, probe=True):
+    """
+    Download audio to local cache and return file path (avoids stream expiration).
+    Skips videos longer than max_duration (checked during the probe pass).
+    Pass probe=False when the URL was already probed to skip the duplicate
+    network round-trip.
+    """
+    cached = cached_stream_path(url)
+    if cached:
         return cached
 
     ydl_opts = {
@@ -61,14 +122,15 @@ def resolve_stream(url, max_duration=600):
 
     try:
         with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            duration = info.get("duration", 0)
-            
-            # Skip if video is too long
-            if duration and duration > max_duration:
-                print(f"Video too long ({duration}s > {max_duration}s), skipping")
-                return None
-            
+            if probe:
+                info = ydl.extract_info(url, download=False)
+                duration = info.get("duration", 0)
+
+                # Skip if video is too long
+                if duration and duration > max_duration:
+                    print(f"Video too long ({duration}s > {max_duration}s), skipping")
+                    return None
+
             # Now download
             info = ydl.extract_info(url, download=True)
             video_id = info.get("id")

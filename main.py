@@ -4,9 +4,9 @@ import time
 import warnings
 from pathlib import Path
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QDialog, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMessageBox, QProgressDialog, QPushButton, QTextEdit,
-    QVBoxLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QInputDialog,
+    QLabel, QLineEdit, QMessageBox, QProgressDialog, QPushButton, QSlider,
+    QTextEdit, QVBoxLayout,
 )
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
@@ -167,6 +167,9 @@ class MusicAppController:
         self.window.touch_mode_changed.connect(
             lambda enabled: set_app_setting("touch_mode", str(bool(enabled)))
         )
+
+        # Restore the queue row size chosen in the settings dialog
+        self._apply_queue_scale()
         
         # Restore the last playlist or show playlists first
         self._restore_last_view()
@@ -241,6 +244,7 @@ class MusicAppController:
         self.window.stop_requested.connect(self.handle_stop)
         self.window.volume_mute.connect(self.handle_volume_mute)
         self.window.network_sync_requested.connect(self.handle_network_sync)
+        self.window.settings_requested.connect(self.handle_settings)
 
         fullscreen = self.window.fullscreen_player
         fullscreen.play_pause_clicked.connect(self.handle_play_pause)
@@ -1298,10 +1302,150 @@ class MusicAppController:
         if fullscreen.isVisible():
             fullscreen.close()
         else:
+            screen = self._fullscreen_target_screen()
+            if screen is not None:
+                # Pin the fullscreen view to the screen picked in Settings.
+                # setScreen only sticks while the window is hidden, which is
+                # exactly the case here; the geometry keeps frameless windows
+                # honest on some window managers.
+                fullscreen.setScreen(screen)
+                fullscreen.setGeometry(screen.geometry())
             fullscreen.showFullScreen()
             fullscreen.raise_()
             fullscreen.activateWindow()
             self._update_now_playing()
+
+    def _fullscreen_target_screen(self):
+        """QScreen the fullscreen view should fill, or None for "Auto".
+
+        The setting stores the QScreen name (e.g. "DP-1"); a missing or
+        unplugged screen silently falls back to the window's own screen.
+        """
+        name = (get_app_setting("fullscreen_screen", "auto") or "auto").strip()
+        if name and name.lower() != "auto":
+            for screen in QApplication.screens():
+                if screen.name() == name:
+                    return screen
+        return None
+
+    def _queue_scale(self):
+        """Saved queue row scale, clamped to the slider range."""
+        try:
+            return max(0.5, min(3.0, float(get_app_setting("queue_row_scale", 1.0) or 1.0)))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _apply_queue_scale(self, scale=None):
+        """Apply a row scale to the queue view (default: the saved one)."""
+        if scale is None:
+            scale = self._queue_scale()
+        self.window.queue_panel.set_row_scale(scale)
+
+    def handle_settings(self):
+        """Open the settings dialog (fullscreen screen + queue row size)."""
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle("Settings")
+        dialog.setMinimumWidth(520)
+        # The app stylesheet themes most widgets but not QComboBox; give the
+        # dialog's dropdown the same dark look inline.
+        dialog.setStyleSheet(
+            "QComboBox { background-color: #1e1e1e; color: #ffffff;"
+            " border: 1px solid #404040; border-radius: 4px; padding: 8px; }"
+            "QComboBox:focus { border: 1px solid #1db954; }"
+            "QComboBox::drop-down { border: none; width: 26px; }"
+            "QComboBox QAbstractItemView { background-color: #1e1e1e;"
+            " color: #ffffff; selection-background-color: #1db954;"
+            " selection-color: #ffffff; outline: none; }"
+        )
+        layout = QVBoxLayout(dialog)
+
+        # ── Fullscreen screen ──
+        layout.addWidget(QLabel("Fullscreen shows on:", dialog))
+        screen_combo = QComboBox(dialog)
+        screens = QApplication.screens()
+        saved_screen = (get_app_setting("fullscreen_screen", "auto") or "auto").strip()
+        screen_combo.addItem("Auto (screen the window is on)", "auto")
+        selected = 0
+        for i, screen in enumerate(screens):
+            geo = screen.geometry()
+            name = screen.name() or f"Screen {i + 1}"
+            label = f"{name}  ({geo.width()}x{geo.height()})"
+            if screen == QApplication.primaryScreen():
+                label += " — primary"
+            screen_combo.addItem(label, screen.name())
+            if screen.name() == saved_screen:
+                selected = screen_combo.count() - 1
+        screen_combo.setCurrentIndex(selected)
+
+        def save_screen(index):
+            set_app_setting("fullscreen_screen", str(screen_combo.itemData(index) or "auto"))
+
+        screen_combo.activated.connect(save_screen)
+        layout.addWidget(screen_combo)
+        screen_hint = QLabel(
+            "Picks the monitor the fullscreen player fills. If that screen "
+            "is ever unplugged, fullscreen falls back to the window's own screen.",
+            dialog,
+        )
+        screen_hint.setWordWrap(True)
+        layout.addWidget(screen_hint)
+
+        layout.addSpacing(12)
+
+        # ── Queue row size ──
+        scale_row = QHBoxLayout()
+        scale_label = QLabel("Queue song size:", dialog)
+        scale_row.addWidget(scale_label)
+        percent_label = QLabel(dialog)
+        scale_row.addWidget(percent_label)
+        scale_row.addStretch()
+        layout.addLayout(scale_row)
+
+        scale_slider = QSlider(Qt.Horizontal, dialog)
+        scale_slider.setRange(50, 300)  # percent of the default row size
+        scale_slider.setValue(int(round(self._queue_scale() * 100)))
+        scale_slider.setTickPosition(QSlider.TicksBelow)
+        scale_slider.setTickInterval(25)
+        scale_slider.setSingleStep(5)
+        scale_slider.setPageStep(25)
+
+        def on_scale_changed(value):
+            scale = value / 100.0
+            percent_label.setText(f"{value}%")
+            self._apply_queue_scale(scale)
+            set_app_setting("queue_row_scale", str(scale))
+
+        percent_label.setText(f"{scale_slider.value()}%")
+        scale_slider.valueChanged.connect(on_scale_changed)
+        layout.addWidget(scale_slider)
+        scale_hint = QLabel(
+            "Scales the song rows in the queue view (icon, text and spacing) "
+            "live while you drag. Works in both normal and touch panel mode.",
+            dialog,
+        )
+        scale_hint.setWordWrap(True)
+        layout.addWidget(scale_hint)
+
+        layout.addSpacing(12)
+
+        # ── Buttons ──
+        buttons = QHBoxLayout()
+        reset_btn = QPushButton("Reset Defaults", dialog)
+
+        def reset_defaults():
+            screen_combo.setCurrentIndex(0)
+            save_screen(0)
+            scale_slider.setValue(100)
+
+        reset_btn.clicked.connect(reset_defaults)
+        buttons.addWidget(reset_btn)
+        buttons.addStretch()
+        close_btn = QPushButton("Close", dialog)
+        close_btn.clicked.connect(dialog.accept)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+        dialog.exec()
 
     def handle_back(self):
         """Back button: exit fullscreen, clear highlight, or go to playlists list."""

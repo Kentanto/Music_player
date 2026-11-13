@@ -166,6 +166,14 @@ class FullscreenPlayer(QWidget):
         volume_layout.addWidget(self.volume_slider)
         controls.addWidget(volume_control, 0, 0, Qt.AlignRight | Qt.AlignVCenter)
 
+        # Invisible spacer mirroring the shuffle button so the transport row
+        # is symmetric and the play/pause button sits exactly at the screen's
+        # horizontal center instead of between pause and next.  Width = the
+        # 58px control width from styles.qss + its 1px borders on each side.
+        left_spacer = QWidget()
+        left_spacer.setFixedSize(60, 42)
+        transport_controls.addWidget(left_spacer)
+
         self.prev_button = QPushButton()
         self.prev_button.setObjectName("fullscreenControl")
         self.prev_button.setToolTip("Previous track")

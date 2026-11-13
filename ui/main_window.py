@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
     back_requested = Signal()
     stop_requested = Signal()
     select_requested = Signal()
+    settings_requested = Signal()
     touch_mode_changed = Signal(bool)
 
     def __init__(self, parent=None):
@@ -186,6 +187,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Link Spotify", self.sidebar.link_spotify_clicked.emit)
         menu.addAction("Failed Songs", self.sidebar.view_failures_clicked.emit)
         menu.addAction("🔗 Network Sync", self.sidebar.network_sync_clicked.emit)
+        menu.addAction("⚙️ Settings", self.settings_requested.emit)
         menu.addSeparator()
         touch_action = menu.addAction("Touch Panel Mode")
         touch_action.setCheckable(True)

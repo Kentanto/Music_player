@@ -109,26 +109,54 @@ class ThumbnailLoader(QNetworkAccessManager):
 
 
 class QueueItemDelegate(QStyledItemDelegate):
-    """Rich row delegate: icon + title / artist / duration."""
+    """Rich row delegate: icon + title / artist / duration.
 
-    ICON_SIZE = 40
-    PADDING = 6
+    Row size comes from a base size (normal or touch) multiplied by a
+    user-chosen scale factor (settings dialog), so songs can be drawn
+    bigger or smaller without touching the layout code.
+    """
+
+    BASE_ICON_SIZE = 40
+    BASE_PADDING = 6
+    BASE_TOUCH_ICON_SIZE = 110
+    BASE_TOUCH_PADDING = 18
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._default_icon = QIcon.fromTheme("audio-x-generic")
         self._thumb_cache = {}
+        self._touch_mode = False
+        self._scale = 1.0
+        self.ICON_SIZE = self.BASE_ICON_SIZE
+        self.PADDING = self.BASE_PADDING
 
-    def set_touch_mode(self, enabled):
-        if enabled:
-            self.ICON_SIZE = 110
-            self.PADDING = 18
+    def _apply_metrics(self):
+        """Recompute row metrics from the current mode + scale."""
+        if self._touch_mode:
+            self.ICON_SIZE = max(12, int(self.BASE_TOUCH_ICON_SIZE * self._scale))
+            self.PADDING = max(2, int(self.BASE_TOUCH_PADDING * self._scale))
         else:
-            self.ICON_SIZE = 40
-            self.PADDING = 6
+            self.ICON_SIZE = max(12, int(self.BASE_ICON_SIZE * self._scale))
+            self.PADDING = max(1, int(self.BASE_PADDING * self._scale))
         parent = self.parent()
         if parent:
             parent.viewport().update()
+
+    def set_touch_mode(self, enabled):
+        self._touch_mode = bool(enabled)
+        self._apply_metrics()
+
+    def set_scale(self, scale):
+        """Set the row size scale factor (1.0 = default size)."""
+        try:
+            self._scale = max(0.5, min(3.0, float(scale)))
+        except (TypeError, ValueError):
+            self._scale = 1.0
+        self._apply_metrics()
+
+    def scale(self):
+        return self._scale
+
     def _thumb_pixmap(self, thumbnail, list_widget):
         if thumbnail in self._thumb_cache:
             return self._thumb_cache[thumbnail]
@@ -202,10 +230,14 @@ class QueueItemDelegate(QStyledItemDelegate):
         if data and data.get("count") is not None:
             title += f"  ({data.get('count', 0)} songs)"
 
-        is_touch = self.ICON_SIZE >= 60
-        title_px = 30 if is_touch else 12
-        sub_px = 24 if is_touch else 10
-        duration_w = 120 if is_touch else 50
+        # Fonts and the duration column scale with the same user-chosen
+        # factor as the icon/padding, in both normal and touch mode.
+        base_title_px = 30 if self._touch_mode else 12
+        base_sub_px = 24 if self._touch_mode else 10
+        base_duration_w = 120 if self._touch_mode else 50
+        title_px = max(6, int(base_title_px * self._scale))
+        sub_px = max(5, int(base_sub_px * self._scale))
+        duration_w = max(30, int(base_duration_w * self._scale))
 
         font = QFont("Arial")
         font.setPixelSize(title_px)
@@ -235,7 +267,7 @@ class QueueItemDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index):
-        return QSize(option.rect.width(), self.ICON_SIZE + self.PADDING * 2 + 8)
+        return QSize(option.rect.width(), self.ICON_SIZE + self.PADDING * 2 + int(8 * self._scale))
 
 
 class _ScrollBadge(QWidget):
@@ -410,6 +442,18 @@ class QueuePanel(QWidget):
         # with the new size on the next scroll.
         self.scroll_badge.hide()
         # Force re-layout of all rows
+        self._refresh_display()
+
+    def set_row_scale(self, scale):
+        """Scale the song rows (icon, padding, fonts); 1.0 = default size.
+
+        Works in both normal and touch mode — the factor multiplies the
+        mode's base size, so touch rows stay proportionally bigger.
+        """
+        delegate = self.list_widget.itemDelegate()
+        if isinstance(delegate, QueueItemDelegate):
+            delegate.set_scale(scale)
+        # Force re-layout of all rows so the new row height takes effect
         self._refresh_display()
 
     def init_ui(self):

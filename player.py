@@ -6,8 +6,9 @@ except ImportError:
 from PySide6.QtCore import QUrl, QTimer, Signal, QObject, QThread
 import os
 import random
+import time
 
-from cache import resolve_stream
+from cache import resolve_stream, probe_stream_url, cached_stream_path
 
 
 class PlayerSignals(QObject):
@@ -22,9 +23,15 @@ class PlayerSignals(QObject):
 
 class StreamResolveWorker(QThread):
     """Downloads a remote stream off the UI thread so playing a YouTube URL
-    never freezes the app (same pattern as SearchWorker / MetadataFetcher)."""
+    never freezes the app (same pattern as SearchWorker / MetadataFetcher).
 
-    resolved = Signal(int, str, object)  # generation, original url, stream path/URL
+    First emits `streaming` with a direct network audio URL so playback can
+    start immediately, then downloads the full file to the local cache and
+    emits `resolved` with its path so the player can swap over without
+    losing its position."""
+
+    streaming = Signal(int, str, str)  # generation, original url, network stream url
+    resolved = Signal(int, str, object)  # generation, original url, local path/URL
 
     def __init__(self, url, generation, parent=None):
         super().__init__(parent)
@@ -32,8 +39,28 @@ class StreamResolveWorker(QThread):
         self._generation = generation
 
     def run(self):
-        stream = resolve_stream(self._url)
-        self.resolved.emit(self._generation, self._url, stream)
+        # Already downloaded? Hand back the local file straight away — no
+        # network round-trip needed.
+        cached = cached_stream_path(self._url)
+        if cached:
+            self.resolved.emit(self._generation, self._url, cached)
+            return
+
+        # Quick probe: get the direct audio URL so the player can start
+        # streaming right away...
+        stream_url = probe_stream_url(self._url)
+        if stream_url:
+            self.streaming.emit(self._generation, self._url, stream_url)
+            # ...while the full file downloads to the cache in this same
+            # thread.  The probe already validated the duration, so the
+            # duplicate probe pass is skipped.
+            local = resolve_stream(self._url, probe=False)
+            self.resolved.emit(self._generation, self._url, local)
+            return
+
+        # Probe failed — fall back to the plain download-only path.
+        local = resolve_stream(self._url)
+        self.resolved.emit(self._generation, self._url, local)
 
 
 class Player:
@@ -74,6 +101,12 @@ class Player:
         # In-flight background stream downloads, kept referenced so the
         # QThreads are never garbage-collected while running
         self._resolve_workers = []
+        # Direct network URL currently being streamed while its file
+        # downloads in the background (None when playing a local source)
+        self._streaming_source = None
+        # Details of an in-progress swap from network stream to the
+        # downloaded file (see _begin_local_switch)
+        self._pending_switch = None
         # True once playback of an actual track has been initiated.  Before
         # that, _current_item is only a queue anchor and the UI must not
         # treat it as "now playing".
@@ -84,9 +117,9 @@ class Player:
         self.audio.setVolume(self._to_audio_volume(self.volume))
         
         # Connect player signals
-        self.player.positionChanged.connect(self.signals.position_changed.emit)
+        self.player.positionChanged.connect(self._on_position_changed)
         self.player.durationChanged.connect(self.signals.duration_changed.emit)
-        self.player.playbackStateChanged.connect(self.signals.state_changed.emit)
+        self.player.playbackStateChanged.connect(self._on_playback_state_changed)
         
         # Auto-play next when media ends
         self.player.mediaStatusChanged.connect(self._on_media_status_changed)
@@ -99,6 +132,10 @@ class Player:
         # this as "now playing".
         self._has_media = True
         self._playing_item = url
+        # New track: drop any in-flight swap and stream state from the last
+        # one so they can never leak into this playback.
+        self._streaming_source = None
+        self._pending_switch = None
 
         # If the URL is already a local file path, play it directly.
         if isinstance(url, str) and os.path.exists(url):
@@ -109,13 +146,27 @@ class Player:
         # Remote URL: resolving (a yt-dlp download) can take a long time, so
         # it must never run on the UI thread. Kick it off in the background;
         # the generation guard drops the result if the user has meanwhile
-        # picked another track or switched views.
+        # picked another track or switched views.  The worker first emits
+        # the direct network URL (`streaming`) so playback starts right
+        # away, then the downloaded file path (`resolved`).
         print(f"[player] resolving stream in background: {url}", flush=True)
         worker = StreamResolveWorker(url, generation)
+        worker.streaming.connect(self._on_stream_available)
         worker.resolved.connect(self._on_stream_resolved)
         self._resolve_workers.append(worker)
         worker.finished.connect(lambda w=worker: self._forget_resolve_worker(w))
         worker.start()
+
+    def _on_stream_available(self, generation, url, stream_url):
+        """Start playing the direct network stream immediately while the
+        full file keeps downloading in the background."""
+        if generation != self._play_generation:
+            print("[player] stale stream probe dropped", flush=True)
+            return
+        print(f"[player] streaming from network while download finishes: {url}", flush=True)
+        self._streaming_source = stream_url
+        self.player.setSource(QUrl(stream_url))
+        self.player.play()
 
     def _on_stream_resolved(self, generation, url, stream):
         """Start playback when a background resolve finishes (main thread)."""
@@ -123,18 +174,82 @@ class Player:
             print("[player] stale stream resolve dropped", flush=True)
             return
         if not stream:
+            if self._streaming_source:
+                # The download failed but the network stream is already
+                # playing — keep streaming instead of cutting the audio.
+                print(f"[player] download failed, continuing network stream: {url}", flush=True)
+                return
             # A failed download must not be treated as a completed track.
             print(f"[player] stream resolve failed: {url}", flush=True)
             self.player.stop()
             return
 
-        # Convert local file path to file:// URL
+        if self._streaming_source:
+            # Already playing from the network — swap in the fully
+            # downloaded file at the exact current position.
+            self._streaming_source = None
+            self._begin_local_switch(stream)
+            return
+
+        # Not streaming (cache hit or probe fallback): play the resolved source.
         if isinstance(stream, str) and not stream.startswith("http"):
             self.player.setSource(QUrl.fromLocalFile(stream))
         else:
             stream_url = QUrl(stream)
             self.player.setSource(stream_url)
         self.player.play()
+
+    def _begin_local_switch(self, path):
+        """Swap the playing network stream for the fully downloaded file.
+
+        Captures the position and a wall-clock timestamp before switching;
+        once the file is loaded, _finish_local_switch seeks to that position
+        plus the time the switch took, so playback continues at the exact
+        same spot.
+        """
+        position = self.player.position()
+        was_playing = (
+            self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        )
+        self._pending_switch = {
+            "position": position,
+            "playing": was_playing,
+            "captured_at": time.monotonic(),
+        }
+        print(f"[player] swapping to downloaded file at {position} ms", flush=True)
+        self.player.setSource(QUrl.fromLocalFile(path))
+
+    def _finish_local_switch(self):
+        """Continue playback from the downloaded file at the exact position
+        the network stream had reached (plus the time the swap took)."""
+        info = self._pending_switch
+        self._pending_switch = None
+        target = info["position"]
+        if info["playing"]:
+            target += int((time.monotonic() - info["captured_at"]) * 1000)
+        duration = self.player.duration()
+        if duration > 0:
+            target = min(target, max(0, duration - 1))
+        target = max(0, target)
+        self.player.setPosition(target)
+        if info["playing"]:
+            self.player.play()
+        print(f"[player] now playing the downloaded file from {target} ms", flush=True)
+
+    def _on_position_changed(self, position):
+        # While swapping the network stream for the downloaded file, the
+        # position would briefly jump back to 0 and scare the seek bar —
+        # hold the last real position until the swap completes.
+        if self._pending_switch:
+            return
+        self.signals.position_changed.emit(position)
+
+    def _on_playback_state_changed(self, state):
+        # The stream→file swap passes through a brief Stopped state; hide it
+        # so the UI does not flicker to "paused" mid-track.
+        if self._pending_switch and state == QMediaPlayer.PlaybackState.StoppedState:
+            return
+        self.signals.state_changed.emit(state)
 
     def _forget_resolve_worker(self, worker):
         self._resolve_workers = [w for w in self._resolve_workers if w is not worker]
@@ -424,6 +539,8 @@ class Player:
         self.player.play()
 
     def stop(self):
+        # An in-flight stream→file swap must never fire after an explicit stop.
+        self._pending_switch = None
         self.player.stop()
 
     def shutdown(self):
@@ -467,7 +584,13 @@ class Player:
         print(f"[AUDIO] Switched to default output: {new_device.description()}", flush=True)
     
     def _on_media_status_changed(self, status):
-        """Handle media status changes - auto-play next when current ends"""
+        """Handle media status changes - swap to the downloaded file as soon
+        as it is loaded, and auto-play next when the current track ends"""
+        # The downloaded file finished loading: complete the seamless swap.
+        if status == QMediaPlayer.MediaStatus.LoadedMedia and self._pending_switch:
+            self._finish_local_switch()
+            return
+
         # Auto-play next when the media has ended
         if status != QMediaPlayer.MediaStatus.EndOfMedia or not self.autoplay_enabled:
             return
