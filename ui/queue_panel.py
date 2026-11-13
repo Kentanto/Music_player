@@ -649,7 +649,14 @@ class QueuePanel(QWidget):
         self.items_data = list(items)
 
         if filter_text:
-            items = [item for item in items if filter_text in str(item.get("title", "")).casefold()]
+            # Match the artist name as well, so filtering works no matter
+            # which of the two the user remembers.
+            items = [
+                item
+                for item in items
+                if filter_text in str(item.get("title", "")).casefold()
+                or filter_text in str(item.get("artist", "")).casefold()
+            ]
 
         self.list_widget.clear()
 

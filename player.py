@@ -107,6 +107,10 @@ class Player:
         # Details of an in-progress swap from network stream to the
         # downloaded file (see _begin_local_switch)
         self._pending_switch = None
+        # Pending verification that a finished swap really started playing
+        # (the Qt backend can drop commands issued right after a source
+        # change — see _verify_local_switch)
+        self._local_switch_check = None
         # True once playback of an actual track has been initiated.  Before
         # that, _current_item is only a queue anchor and the UI must not
         # treat it as "now playing".
@@ -136,6 +140,7 @@ class Player:
         # one so they can never leak into this playback.
         self._streaming_source = None
         self._pending_switch = None
+        self._local_switch_check = None
 
         # If the URL is already a local file path, play it directly.
         if isinstance(url, str) and os.path.exists(url):
@@ -202,10 +207,11 @@ class Player:
     def _begin_local_switch(self, path):
         """Swap the playing network stream for the fully downloaded file.
 
-        Captures the position and a wall-clock timestamp before switching;
-        once the file is loaded, _finish_local_switch seeks to that position
-        plus the time the switch took, so playback continues at the exact
-        same spot.
+        Captures the position and a wall-clock timestamp before switching.
+        The resume itself waits for the swapped-in file to finish loading
+        (see _resume_from_local_file_when_loaded) and then seeks to the
+        captured position plus the time the switch took, so playback
+        continues at the exact same spot.
         """
         position = self.player.position()
         was_playing = (
@@ -215,15 +221,51 @@ class Player:
             "position": position,
             "playing": was_playing,
             "captured_at": time.monotonic(),
+            "generation": self._play_generation,
+            "loading_seen": False,
         }
         print(f"[player] swapping to downloaded file at {position} ms", flush=True)
         self.player.setSource(QUrl.fromLocalFile(path))
+        # Safety net: if the load events never arrive (they normally trigger
+        # the resume — see _on_media_status_changed), force the attempt.
+        QTimer.singleShot(
+            2000, lambda: self._resume_from_local_file_when_loaded(force=True)
+        )
 
-    def _finish_local_switch(self):
-        """Continue playback from the downloaded file at the exact position
-        the network stream had reached (plus the time the swap took)."""
+    def _resume_from_local_file_when_loaded(self, force=False):
+        """Resume the swapped-in downloaded file once it is truly loaded.
+
+        The outgoing network stream keeps delivering stale mediaStatus
+        events while the new file loads (a bogus LoadedMedia arrives even
+        before the new source's own LoadingMedia), so "ready" is detected
+        via the new source's Loading→Loaded sequence in
+        _on_media_status_changed.  Seeking before the load completes makes
+        the backend drop the seek and the track restarts from 0:00.
+        """
         info = self._pending_switch
+        if not info:
+            return  # already resumed, or cancelled by stop()/next track
+        if not force:
+            status = self.player.mediaStatus()
+            loaded = status in (
+                QMediaPlayer.MediaStatus.LoadedMedia,
+                QMediaPlayer.MediaStatus.BufferingMedia,
+                QMediaPlayer.MediaStatus.BufferedMedia,
+            )
+            if not loaded:
+                return  # wait for the real LoadedMedia (or the 2 s timer)
         self._pending_switch = None
+        self._resume_from_local_file(info)
+
+    def _resume_from_local_file(self, info):
+        """Seek the loaded file to the captured position and resume.
+
+        Runs one event-loop turn after the file finished loading: issuing
+        seek/play from inside the mediaStatusChanged handler re-enters the
+        backend mid-transition and the commands get silently dropped.
+        """
+        if info["generation"] != self._play_generation:
+            return
         target = info["position"]
         if info["playing"]:
             target += int((time.monotonic() - info["captured_at"]) * 1000)
@@ -234,7 +276,42 @@ class Player:
         self.player.setPosition(target)
         if info["playing"]:
             self.player.play()
+            # Safety net: verify shortly that playback really started from
+            # the right spot — if the backend dropped the commands anyway,
+            # retry once.
+            self._local_switch_check = {
+                "generation": self._play_generation,
+                "target": target,
+            }
+            QTimer.singleShot(500, self._verify_local_switch)
         print(f"[player] now playing the downloaded file from {target} ms", flush=True)
+
+    def _verify_local_switch(self):
+        """One-shot safety net for the stream→file swap.
+
+        Catches the two ways the Qt backend can drop the swap commands:
+        playback frozen at 0:00 (player claims Playing but the position
+        never moves), and playback running from the wrong spot (the seek
+        was ignored and the track restarted).  Anything else — the user
+        pausing, seeking, stopping or changing tracks — is left alone.
+        """
+        check = self._local_switch_check
+        self._local_switch_check = None
+        if not check or check["generation"] != self._play_generation:
+            return
+        if self.player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            return  # user took over (pause/stop/next)
+        position = self.player.position()
+        status = self.player.mediaStatus()
+        if position == 0 and status == QMediaPlayer.MediaStatus.LoadedMedia:
+            # Frozen at 0:00 — the seek and the play were both dropped.
+            print("[player] swap froze playback, retrying seek + play", flush=True)
+            self.player.setPosition(check["target"])
+            self.player.play()
+        elif position < check["target"] - 1500:
+            # Playing, but from the start instead of the captured position.
+            print("[player] swap lost the seek, re-seeking", flush=True)
+            self.player.setPosition(check["target"])
 
     def _on_position_changed(self, position):
         # While swapping the network stream for the downloaded file, the
@@ -533,6 +610,12 @@ class Player:
 
     # ---------- controls ----------
     def pause(self):
+        # User intent overrides any pending swap-verification retry.
+        self._local_switch_check = None
+        if self._pending_switch:
+            # A swap is mid-flight: let it finish loading the downloaded
+            # file, but the user wants it paused, not auto-resumed.
+            self._pending_switch["playing"] = False
         self.player.pause()
 
     def resume(self):
@@ -541,6 +624,7 @@ class Player:
     def stop(self):
         # An in-flight stream→file swap must never fire after an explicit stop.
         self._pending_switch = None
+        self._local_switch_check = None
         self.player.stop()
 
     def shutdown(self):
@@ -584,12 +668,32 @@ class Player:
         print(f"[AUDIO] Switched to default output: {new_device.description()}", flush=True)
     
     def _on_media_status_changed(self, status):
-        """Handle media status changes - swap to the downloaded file as soon
-        as it is loaded, and auto-play next when the current track ends"""
-        # The downloaded file finished loading: complete the seamless swap.
-        if status == QMediaPlayer.MediaStatus.LoadedMedia and self._pending_switch:
-            self._finish_local_switch()
-            return
+        """Handle media status changes - swap to the downloaded file once it
+        is really loaded, and auto-play next when the current track ends"""
+        if self._pending_switch:
+            # A stream→file swap is in flight.  The outgoing network stream
+            # still emits stale status events (including a bogus LoadedMedia
+            # that arrives BEFORE the new file's own LoadingMedia), so "the
+            # downloaded file is ready" is only trusted on the new source's
+            # LoadingMedia → LoadedMedia sequence.
+            if status == QMediaPlayer.MediaStatus.LoadingMedia:
+                self._pending_switch["loading_seen"] = True
+            elif (
+                status == QMediaPlayer.MediaStatus.LoadedMedia
+                and self._pending_switch.get("loading_seen")
+            ):
+                # Loaded for real — resume one event-loop turn later: never
+                # issue seek/play from inside this handler, the backend is
+                # mid-transition and would drop them.
+                QTimer.singleShot(0, self._resume_from_local_file_when_loaded)
+                return
+            elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+                # The file failed to load mid-swap: stop waiting and just
+                # play what we have rather than freezing half-swapped.
+                print("[player] downloaded file failed to load, resuming from 0", flush=True)
+                self._pending_switch = None
+                self.player.play()
+                return
 
         # Auto-play next when the media has ended
         if status != QMediaPlayer.MediaStatus.EndOfMedia or not self.autoplay_enabled:
