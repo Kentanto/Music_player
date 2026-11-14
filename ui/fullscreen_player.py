@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QTimer, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QLinearGradient, QPainter, QPixmap, QRegion, QIcon
 
-import subprocess
+from keep_awake import ScreenWakeLock
 
 from .clickable_slider import FocusAwareSlider
 from .eq_visualizer import EQVisualizer
@@ -68,10 +68,11 @@ class FullscreenPlayer(QWidget):
         self._idle_timer.timeout.connect(lambda: self._set_idle_mode(True))
         self._transition_animation = None
 
-        # Prevent screen blanking while fullscreen is active
-        self._wake_timer = QTimer(self)
-        self._wake_timer.setInterval(25000)
-        self._wake_timer.timeout.connect(self._send_wake_pulse)
+        # Prevent screen blanking / suspend while fullscreen is active.
+        # The lock asks the desktop directly (D-Bus screensaver inhibit on
+        # Linux, SetThreadExecutionState on Windows) — faked keypresses
+        # never worked on Wayland.
+        self._wake_lock = ScreenWakeLock()
 
         self.setWindowTitle("Music Engine")
         self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
@@ -402,26 +403,16 @@ class FullscreenPlayer(QWidget):
         super().showEvent(event)
         QApplication.instance().installEventFilter(self)
         self._register_activity()
-        self._wake_timer.start()
+        self._wake_lock.acquire()
 
     def hideEvent(self, event):
         application = QApplication.instance()
         if application is not None:
             application.removeEventFilter(self)
         self._idle_timer.stop()
-        self._wake_timer.stop()
+        self._wake_lock.release()
         self._set_cursor_hidden(False)
         super().hideEvent(event)
-
-    def _send_wake_pulse(self):
-        try:
-            subprocess.run(
-                ["xdotool", "key", "Shift_L"],
-                capture_output=True,
-                timeout=2,
-            )
-        except Exception:
-            pass
 
     def eventFilter(self, watched, event):
         activity_events = {

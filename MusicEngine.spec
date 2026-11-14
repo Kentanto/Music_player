@@ -13,6 +13,7 @@ hiddenimports = (
     + ["PySide6.QtMultimedia"]
     + ["retry_failed"]
     + ["PySide6.QtMultimedia", "retry_failed"]
+    + ["keep_awake", "PySide6.QtDBus"]
 )
 
 datas = [
