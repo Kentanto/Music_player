@@ -34,6 +34,9 @@ from db import (
     get_track_metadata,
     get_all_playlist_songs_flat,
     get_playlist_by_id,
+    get_song_by_url,
+    redownload_song_high_quality,
+    redownload_playlist_high_quality,
     get_spotify_links,
     get_ytdlp_cookie_options,
     set_ytdlp_cookie_config,
@@ -42,7 +45,7 @@ from db import (
 )
 from metadata_fetcher import MetadataFetcher
 from spotify_download import SpotifyImportWorker, SpotifyLinkWorker, SpotifySyncWorker
-from retry_failed import RetryFailedWorker, parse_failures
+from retry_failed import RetryFailedWorker, parse_failures, clear_failure_log
 from cec_remote import CecRemoteListener
 from mocute_listener import MocuteListener
 from net_sync import SyncEngine, normalize_mac, local_mac, DEFAULT_SYNC_PORT
@@ -89,6 +92,77 @@ class AddSongWorker(QThread):
             self.add_failed.emit("add_song_to_playlist returned no path")
 
 
+class RedownloadWorker(QThread):
+    """Re-downloads a song from its stored URL off the UI thread so the
+    window never freezes during a yt-dlp download (same pattern as
+    AddSongWorker)."""
+
+    redownload_finished = Signal(str)  # new file path
+    redownload_failed = Signal(str)     # reason
+
+    def __init__(self, playlist_id, song_id, parent=None):
+        super().__init__(parent)
+        self._playlist_id = playlist_id
+        self._song_id = song_id
+
+    def run(self):
+        try:
+            new_path = redownload_song_high_quality(self._playlist_id, self._song_id)
+        except Exception as error:
+            print(f"[redownload] worker exception: {type(error).__name__}: {error}", flush=True)
+            self.redownload_failed.emit(str(error))
+            return
+        if new_path:
+            self.redownload_finished.emit(new_path)
+        else:
+            self.redownload_failed.emit("download returned no path")
+
+
+class RedownloadAllWorker(QThread):
+    """Batch re-downloads every legacy song of one or more playlists off the
+    UI thread (same pattern as RetryFailedWorker)."""
+
+    progress = Signal(int, int, str)   # current, total, song
+    completed = Signal(object)        # merged summary dict
+    failed = Signal(str)
+
+    def __init__(self, playlist_ids, parent=None):
+        super().__init__(parent)
+        self._playlist_ids = list(playlist_ids)
+
+    def run(self):
+        merged = {
+            "total": 0,
+            "downloaded": 0,
+            "skipped_high": 0,
+            "skipped_no_url": 0,
+            "failed": [],
+            "bot_blocked": False,
+            "interrupted": False,
+        }
+        try:
+            for playlist_id in self._playlist_ids:
+                summary = redownload_playlist_high_quality(
+                    playlist_id,
+                    progress=lambda current, total, song: self.progress.emit(current, total, song),
+                    should_stop=self.isInterruptionRequested,
+                )
+                merged["total"] += summary["total"]
+                merged["downloaded"] += summary["downloaded"]
+                merged["skipped_high"] += summary["skipped_high"]
+                merged["skipped_no_url"] += summary["skipped_no_url"]
+                merged["failed"].extend(summary["failed"])
+                merged["bot_blocked"] = merged["bot_blocked"] or summary["bot_blocked"]
+                merged["interrupted"] = merged["interrupted"] or summary["interrupted"]
+                if summary["bot_blocked"]:
+                    break
+        except Exception as error:
+            print(f"[redownload-all] worker exception: {type(error).__name__}: {error}", flush=True)
+            self.failed.emit(str(error))
+            return
+        self.completed.emit(merged)
+
+
 class MusicAppController:
     """Business logic controller - bridges UI and backend"""
     
@@ -107,6 +181,8 @@ class MusicAppController:
         self.spotify_sync_worker = None
         self.add_song_worker = None
         self.retry_failed_worker = None
+        self.redownload_worker = None
+        self.redownload_all_worker = None
         self.cec_remote = None
         self.gamepad = None
         self.mpris = None  # Linux MPRIS bridge (installed in install_mpris)
@@ -227,6 +303,8 @@ class MusicAppController:
         self.window.queue_panel.delete_playlist_requested.connect(self.handle_delete_playlist)
         self.window.queue_panel.playback_order_changed.connect(self.handle_playback_order_changed)
         self.window.add_to_playlist_requested.connect(self.handle_add_to_playlist)
+        self.window.redownload_requested.connect(self.handle_redownload_high_quality)
+        self.window.redownload_all_requested.connect(self.handle_redownload_all_high_quality)
         self.window.track_selected.connect(self.handle_track_selected)
         self.window.next_track.connect(self.handle_next)
         self.window.prev_track.connect(self.handle_prev)
@@ -1034,11 +1112,39 @@ class MusicAppController:
             lambda: self._start_retry_failed(target_id, name, folder, dialog)
         )
         buttons.addWidget(retry_btn)
+        clear_btn = QPushButton("Clear List", dialog)
+        clear_btn.setToolTip("Forget every entry on this list without retrying")
+        clear_btn.clicked.connect(
+            lambda: self._clear_failed_log(name, folder, dialog)
+        )
+        buttons.addWidget(clear_btn)
         close_btn = QPushButton("Close", dialog)
         close_btn.clicked.connect(dialog.accept)
         buttons.addWidget(close_btn)
         layout.addLayout(buttons)
         dialog.exec()
+
+    def _clear_failed_log(self, playlist_name, folder, dialog):
+        """Empty the failed-songs log when the user is not interested."""
+        if self.retry_failed_worker and self.retry_failed_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Clear Failed Songs",
+                "A retry is still running. Wait for it to finish before clearing the list.",
+            )
+            return
+        answer = QMessageBox.question(
+            self.window, "Clear Failed Songs",
+            f'Clear the failed-songs list for "{playlist_name}"?\n'
+            "Nothing will be retried and the entries are gone for good.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if clear_failure_log(folder):
+            self.window.show_notification(
+                "Failed Songs cleared",
+                f'The failed-songs list for "{playlist_name}" was cleared.',
+            )
+        dialog.accept()
 
     def _start_retry_failed(self, playlist_id, playlist_name, folder, dialog):
         """Retry every song on a playlist's failure log without freezing the UI."""
@@ -1216,6 +1322,206 @@ class MusicAppController:
         self.window.show_notification(
             "Download failed",
             f"Failed to add song to playlist.\n{reason}",
+            kind="error",
+            duration_ms=7000,
+        )
+
+    def handle_redownload_high_quality(self, item):
+        """Re-download a queue song from its stored URL in original quality."""
+        if not item or item.get("type") != "track":
+            return
+        title = item.get("title") or "this song"
+        file_path = item.get("file_path")
+        if not file_path:
+            QMessageBox.information(
+                self.window, "Re-download in High Quality",
+                "Only downloaded songs can be re-downloaded.",
+            )
+            return
+
+        # The stored YouTube URL is the identity: no search, no Spotify
+        # matching, so the re-download is guaranteed to be the same song.
+        url = item.get("url") or get_track_metadata(file_path).get("url")
+        song = get_song_by_url(url) if url else None
+        if not url or not song:
+            QMessageBox.information(
+                self.window, "Re-download in High Quality",
+                "This song has no stored download URL, so it cannot be re-downloaded.",
+            )
+            return
+
+        playlist_id = self.current_playlist_id
+        if not playlist_id or playlist_id == "all":
+            QMessageBox.information(
+                self.window, "Re-download in High Quality",
+                'Open the playlist that contains this song first — the re-download '
+                'replaces the file inside that playlist\'s folder.',
+            )
+            return
+
+        answer = QMessageBox.question(
+            self.window, "Re-download in High Quality",
+            f'Re-download "{title}" in its original quality?\n'
+            "The new file replaces the old one and the old file is moved to the trash.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self.add_song_worker and self.add_song_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Re-download in High Quality",
+                "Another song is still downloading. Please wait for it to finish.",
+            )
+            return
+        if self.redownload_worker and self.redownload_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Re-download in High Quality",
+                "A re-download is already running. Please wait for it to finish.",
+            )
+            return
+
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        self.redownload_worker = RedownloadWorker(playlist_id, song[0])
+        self.redownload_worker.redownload_finished.connect(
+            lambda path, t=title, pid=playlist_id: self._on_redownload_finished(t, path, pid)
+        )
+        self.redownload_worker.redownload_failed.connect(self._on_redownload_failed)
+        self.redownload_worker.start()
+
+    def _on_redownload_finished(self, title, new_path, playlist_id):
+        QApplication.restoreOverrideCursor()
+        self._refresh_current_view_for_playlists([playlist_id])
+        self.window.show_notification(
+            "Re-download complete",
+            f'"{title}" was re-downloaded in high quality.\n{new_path}',
+            kind="success",
+        )
+
+    def _on_redownload_failed(self, reason):
+        QApplication.restoreOverrideCursor()
+        print(f"[redownload] failed: {reason}", flush=True)
+        self.window.show_notification(
+            "Re-download failed",
+            f"The song could not be re-downloaded.\n{reason}",
+            kind="error",
+            duration_ms=7000,
+        )
+
+    def handle_redownload_all_high_quality(self, item):
+        """Re-download every legacy (MP3) song of a playlist in original quality."""
+        if not item or item.get("type") != "playlist":
+            return
+        playlist_id = item.get("playlist_id")
+        name = item.get("title") or "this playlist"
+
+        # "All Songs" mixes files from every folder: upgrade every playlist.
+        if playlist_id == "all":
+            playlist_ids = [p[0] for p in get_playlists()]
+            target_name = "every playlist"
+        else:
+            playlist_ids = [playlist_id] if playlist_id else []
+            target_name = f'"{name}"'
+        if not playlist_ids:
+            QMessageBox.information(
+                self.window, "Re-download All in High Quality",
+                "No playlists exist yet.",
+            )
+            return
+
+        answer = QMessageBox.question(
+            self.window, "Re-download All in High Quality",
+            f"Re-download every legacy (MP3) song in {target_name} in high quality?\n\n"
+            "Songs already in high quality (.opus / .m4a) are skipped, and songs "
+            "without a stored download URL cannot be upgraded. Each old file is "
+            "moved to the trash once its replacement is downloaded.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self.add_song_worker and self.add_song_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Re-download All in High Quality",
+                "Another song is still downloading. Please wait for it to finish.",
+            )
+            return
+        if self.redownload_worker and self.redownload_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Re-download All in High Quality",
+                "A re-download is already running. Please wait for it to finish.",
+            )
+            return
+        if self.redownload_all_worker and self.redownload_all_worker.isRunning():
+            QMessageBox.information(
+                self.window, "Re-download All in High Quality",
+                "A batch re-download is already running. Please wait for it to finish.",
+            )
+            return
+
+        worker = RedownloadAllWorker(playlist_ids, self.window)
+        self.redownload_all_worker = worker
+
+        progress_dialog = QProgressDialog(
+            "Preparing …", "Cancel", 0, 0, self.window
+        )
+        progress_dialog.setWindowTitle(f"Re-download All in High Quality — {name}")
+        progress_dialog.setWindowModality(Qt.WindowModal)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.canceled.connect(worker.requestInterruption)
+        progress_dialog.show()
+
+        def on_redownload_all_progress(current, count, song):
+            progress_dialog.setMaximum(count)
+            progress_dialog.setValue(max(current - 1, 0))
+            progress_dialog.setLabelText(f"Re-downloading {current}/{count}:\n{song}")
+
+        worker.progress.connect(on_redownload_all_progress)
+        worker.completed.connect(
+            lambda summary: self._on_redownload_all_completed(summary, playlist_ids, progress_dialog)
+        )
+        worker.failed.connect(
+            lambda reason: self._on_redownload_all_failed(reason, progress_dialog)
+        )
+        worker.start()
+
+    def _on_redownload_all_completed(self, summary, playlist_ids, progress_dialog):
+        """Summarize a finished batch re-download."""
+        progress_dialog.close()
+
+        if summary["downloaded"]:
+            self._refresh_current_view_for_playlists(playlist_ids)
+
+        lines = ["Re-download finished."]
+        lines.append(f"{summary['downloaded']} song(s) upgraded to high quality.")
+        if summary["skipped_high"]:
+            lines.append(f"{summary['skipped_high']} song(s) were already in high quality — skipped.")
+        if summary["skipped_no_url"]:
+            lines.append(f"{summary['skipped_no_url']} song(s) have no stored download URL and were skipped.")
+        if summary["failed"]:
+            lines.append(
+                f"{len(summary['failed'])} song(s) could not be re-downloaded — "
+                "their old files were left untouched."
+            )
+        if summary["interrupted"]:
+            lines.append("The run was cancelled — the remaining songs were left as they were.")
+        if summary["bot_blocked"]:
+            lines.append(
+                "YouTube's sign-in bot wall stopped the run. "
+                "Configure cookies in Settings and try again later."
+            )
+        self.window.show_notification(
+            "Re-download finished",
+            "\n".join(lines),
+            kind="warning" if summary["failed"] or summary["bot_blocked"] else "success",
+            duration_ms=9000,
+        )
+        if summary["bot_blocked"] and not get_ytdlp_cookie_options():
+            self._offer_cookie_setup(1)
+
+    def _on_redownload_all_failed(self, reason, progress_dialog):
+        progress_dialog.close()
+        self.window.show_notification(
+            "Re-download failed",
+            f"Batch re-download failed: {reason}",
             kind="error",
             duration_ms=7000,
         )
@@ -1425,6 +1731,32 @@ class MusicAppController:
         )
         scale_hint.setWordWrap(True)
         layout.addWidget(scale_hint)
+
+        layout.addSpacing(12)
+
+        # ── Song quality ──
+        layout.addWidget(QLabel("Song download quality:", dialog))
+        quality_combo = QComboBox(dialog)
+        quality_combo.addItem("High quality (original stream, no re-encode)", "high")
+        quality_combo.addItem("MP3 192 kbps (legacy)", "mp3")
+        saved_quality = (get_app_setting("song_quality", "high") or "high").strip().lower()
+        quality_combo.setCurrentIndex(1 if saved_quality == "mp3" else 0)
+
+        def save_quality(index):
+            set_app_setting("song_quality", str(quality_combo.itemData(index) or "mp3"))
+
+        quality_combo.activated.connect(save_quality)
+        layout.addWidget(quality_combo)
+        quality_hint = QLabel(
+            "Applies to every new download: search results, Spotify imports and "
+            "retries. High quality keeps YouTube's original audio (usually Opus) "
+            "without a lossy MP3 re-encode, so it sounds better than legacy and "
+            "the files are smaller. Existing songs can be upgraded any time with "
+            "right-click → Re-download in High Quality.",
+            dialog,
+        )
+        quality_hint.setWordWrap(True)
+        layout.addWidget(quality_hint)
 
         layout.addSpacing(12)
 

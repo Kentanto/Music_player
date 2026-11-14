@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import time
 import sqlite3
 import urllib.request
 import shutil
@@ -485,6 +486,14 @@ def get_song_by_url(url):
         return conn.execute(
             "SELECT id, title, artist, thumbnail FROM songs WHERE url=?",
             (url,),
+        ).fetchone()
+
+
+def get_song_by_id(song_id):
+    with sqlite3.connect(DB) as conn:
+        return conn.execute(
+            "SELECT id, title, url, artist, thumbnail FROM songs WHERE id=?",
+            (song_id,),
         ).fetchone()
 
 
@@ -1228,7 +1237,7 @@ def _unique_download_title(safe_title, folder, url):
     return unique
 
 
-def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_metadata_update=False):
+def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_metadata_update=False, quality=None):
     from yt_dlp import YoutubeDL
     import warnings
 
@@ -1243,6 +1252,22 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
         flush=True,
     )
 
+    # Song quality (Settings → Song download quality). "high" is the default:
+    # the original stream YouTube serves is kept — Opus is losslessly remuxed
+    # to .opus and AAC stays in its .m4a untouched — so nothing is ever
+    # re-encoded. "mp3" is the legacy fallback: every download is re-encoded
+    # to a 192 kbps MP3. The app_settings row always wins over the default,
+    # so the user's last choice in Settings sticks across restarts.
+    quality = (quality or get_app_setting("song_quality", "high") or "high").strip().lower()
+    if quality == "high":
+        audio_postprocessor = {"key": "FFmpegExtractAudio", "preferredcodec": "best"}
+    else:
+        audio_postprocessor = {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "192",
+        }
+
     ydl_opts = {
         "format": "bestaudio[protocol=https]/bestaudio/best",
         "noplaylist": True,
@@ -1253,13 +1278,7 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
         "js_runtimes": {"node": {}},
         **({"ffmpeg_location": FFMPEG_LOCATION} if FFMPEG_LOCATION else {}),
         "outtmpl": out_template,
-        "postprocessors": [
-            {
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }
-        ],
+        "postprocessors": [audio_postprocessor],
     }
 
     ydl_opts.update(get_ytdlp_cookie_options())
@@ -1282,22 +1301,22 @@ def download_audio_to_folder(url, title, folder, use_yt_thumbnail=True, skip_met
                 print("[audio-download] failed: yt-dlp returned no video ID", flush=True)
                 return None
 
-            target_path = os.path.join(folder, f"{safe_title}.mp3")
-            if os.path.exists(target_path):
-                if use_yt_thumbnail:
-                    download_thumbnail(info.get("thumbnail"), target_path)
-                if not skip_metadata_update:
-                    update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
-                return target_path
-
-            for ext in _AUDIO_EXTS:
-                alt_path = os.path.join(folder, f"{safe_title}.{ext}")
-                if os.path.exists(alt_path):
+            # Find the finished download. The legacy re-encode always makes
+            # .mp3; in high mode the original stream is kept (.opus/.m4a), so
+            # mp3 is only a last-resort fallback there (a non-YouTube source
+            # may only offer mp3 and yt-dlp then leaves the file untouched).
+            if quality == "high":
+                search_exts = tuple(e for e in _AUDIO_EXTS if e != "mp3") + ("mp3",)
+            else:
+                search_exts = ("mp3",) + tuple(e for e in _AUDIO_EXTS if e != "mp3")
+            for ext in search_exts:
+                found_path = os.path.join(folder, f"{safe_title}.{ext}")
+                if os.path.exists(found_path):
                     if use_yt_thumbnail:
-                        download_thumbnail(info.get("thumbnail"), alt_path)
+                        download_thumbnail(info.get("thumbnail"), found_path)
                     if not skip_metadata_update:
                         update_song_metadata(url, info.get("title") or title, _artist_from_info(info), info.get("thumbnail"))
-                    return alt_path
+                    return found_path
     except Exception as error:
         # A bot-wall block is a cookie problem, not a broken song: surface it
         # so callers can treat it differently from an ordinary failure.
@@ -1318,6 +1337,148 @@ def _artist_from_info(info):
         or info.get("uploader")
         or info.get("channel")
     )
+
+
+def redownload_song_high_quality(playlist_id, song_id):
+    """Re-download a song in original quality using the URL already in the DB.
+
+    The stored YouTube URL is used directly — no search, no Spotify
+    matching — so the new download is guaranteed to be the same song. The
+    stream is kept exactly as YouTube serves it (typically Opus, losslessly
+    remuxed to .opus; AAC stays .m4a): no lossy re-encode.
+
+    The old local file is parked out of the way first, replaced by the new
+    download, and only then sent to the trash. If the download fails, the
+    old file is restored untouched. Returns the new file path, or None on
+    failure. Raises on database/playlist problems.
+    """
+    playlist = get_playlist_by_id(playlist_id)
+    if not playlist:
+        raise RuntimeError("Playlist not found")
+    _, _, folder = playlist
+    song = get_song_by_id(song_id)
+    if not song:
+        raise RuntimeError("Song not found in the database")
+    title, url = song[1], song[2]
+    if not url:
+        raise RuntimeError("This song has no stored download URL")
+
+    old_path = get_playlist_song(playlist_id, song_id)
+
+    # Park the old file under a hidden name so the new download cannot
+    # collide with it, and any failure can be undone cleanly.
+    parked = None
+    if old_path and os.path.exists(old_path):
+        parked = Path(folder) / f".redownload-parked-{uuid.uuid4().hex}{Path(old_path).suffix}"
+        Path(old_path).rename(parked)
+
+    def _restore_old_file():
+        if parked is not None and parked.exists():
+            try:
+                parked.rename(old_path)
+            except OSError:
+                pass
+
+    try:
+        new_path = download_audio_to_folder(url, title or "audio", folder, quality="high")
+    except Exception:
+        _restore_old_file()
+        raise
+    if not new_path:
+        _restore_old_file()
+        return None
+
+    if parked is not None:
+        try:
+            if not _move_to_trash(parked):
+                parked.unlink()
+        except OSError:
+            try:
+                parked.unlink()
+            except OSError:
+                pass
+
+    with sqlite3.connect(DB) as conn:
+        conn.execute(
+            "UPDATE playlist_songs SET file_path=? WHERE playlist_id=? AND song_id=?",
+            (to_portable_path(str(new_path)), playlist_id, song_id),
+        )
+        conn.commit()
+    print(f"[redownload] {title!r}: {old_path} -> {new_path}", flush=True)
+    return new_path
+
+
+# Pause between batch re-downloads so YouTube's bot wall stays quiet.
+REDOWNLOAD_BATCH_PAUSE_SEC = 5
+
+# Files in one of these formats already keep the original stream — a
+# re-download would produce identical data, so batch upgrades skip them.
+_HIGH_QUALITY_EXTS = (".opus", ".m4a", ".webm", ".ogg", ".flac")
+
+
+def redownload_playlist_high_quality(playlist_id, progress=None, should_stop=None):
+    """Re-download every legacy (MP3) song of a playlist in original quality.
+
+    Each song goes through redownload_song_high_quality: its stored YouTube
+    URL is used directly — no search, no Spotify matching — and the old file
+    only leaves the playlist once its replacement is on disk. Songs already
+    in a high-quality format are skipped (a re-download would produce the
+    exact same data); songs without a stored URL are counted as skipped.
+
+    Returns a summary dict: total, downloaded, skipped_high, skipped_no_url,
+    failed (list of (song, reason)), bot_blocked, interrupted.
+    """
+    playlist = get_playlist_by_id(playlist_id)
+    if not playlist:
+        raise RuntimeError("Playlist not found")
+
+    with sqlite3.connect(DB) as conn:
+        rows = conn.execute(
+            "SELECT ps.song_id, s.title, s.url, ps.file_path "
+            "FROM playlist_songs ps JOIN songs s ON ps.song_id = s.id "
+            "WHERE ps.playlist_id = ? ORDER BY ps.id",
+            (playlist_id,),
+        ).fetchall()
+
+    summary = {
+        "total": len(rows),
+        "downloaded": 0,
+        "skipped_high": 0,
+        "skipped_no_url": 0,
+        "failed": [],
+        "bot_blocked": False,
+        "interrupted": False,
+    }
+
+    for index, (song_id, title, url, stored_path) in enumerate(rows, start=1):
+        song_label = title or "unknown song"
+        if progress:
+            progress(index, summary["total"], song_label)
+        if should_stop is not None and should_stop():
+            summary["interrupted"] = True
+            return summary
+        if not url:
+            summary["skipped_no_url"] += 1
+            continue
+        file_path = resolve_stored_path(stored_path) if stored_path else None
+        if file_path and str(file_path).lower().endswith(_HIGH_QUALITY_EXTS):
+            summary["skipped_high"] += 1
+            continue
+        try:
+            new_path = redownload_song_high_quality(playlist_id, song_id)
+        except BotBlockedError:
+            summary["bot_blocked"] = True
+            return summary
+        except Exception as error:
+            summary["failed"].append((song_label, str(error)))
+            continue
+        if new_path:
+            summary["downloaded"] += 1
+        else:
+            summary["failed"].append((song_label, "download returned no path"))
+        # Short breather between downloads to stay under the bot radar.
+        time.sleep(REDOWNLOAD_BATCH_PAUSE_SEC)
+    return summary
 
 
 def cache_stream(url, stream_url):

@@ -101,6 +101,24 @@ def parse_failures(log_path):
     return items
 
 
+def clear_failure_log(folder):
+    """Empty a playlist's failed-songs log when the user gives up on it.
+
+    Deletes failed_songs.txt — the list the Failed Songs dialog shows and
+    the retry works through. retry_log.txt is left alone: it is the run
+    history, not a todo list. Returns True when the log existed and was
+    removed; a missing log is already clear (False). Never raises.
+    """
+    log_path = failure_log_path(folder)
+    try:
+        if log_path.exists():
+            log_path.unlink()
+            return True
+    except OSError as error:
+        print(f"[retry] could not clear the failure log: {error}", flush=True)
+    return False
+
+
 def _pause(seconds, should_stop):
     """Sleep in small steps so a cancel request is noticed quickly."""
     deadline = time.monotonic() + seconds
@@ -307,6 +325,11 @@ if __name__ == "__main__":
         default=None,
         help="Only retry the first N songs from the failure log.",
     )
+    parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear the playlist's failure log instead of retrying it.",
+    )
     args = parser.parse_args()
 
     if args.cookiefile:
@@ -318,6 +341,14 @@ if __name__ == "__main__":
 
     playlist_id, folder = _find_playlist(args.playlist)
     print(f"Target playlist: {args.playlist} (id={playlist_id}, folder={folder})", flush=True)
+
+    if args.clear:
+        if clear_failure_log(folder):
+            print("[retry] Failure log cleared.", flush=True)
+        else:
+            print("[retry] No failure log to clear — it was already empty.", flush=True)
+        raise SystemExit(0)
+
     result = retry_failures(playlist_id, folder, limit=args.limit)
     print("\n" + "=" * 50)
     print(

@@ -405,6 +405,8 @@ class QueuePanel(QWidget):
     soft_remove_requested = Signal(object)
     rename_requested = Signal(object)
     delete_playlist_requested = Signal(object)
+    redownload_requested = Signal(object)
+    redownload_all_requested = Signal(object)
     playback_order_changed = Signal(list)
 
     def __init__(self, parent=None):
@@ -866,8 +868,14 @@ class QueuePanel(QWidget):
         delete_playlist_action = None
         if data.get("type") == "playlist":
             delete_playlist_action = menu.addAction("Delete Playlist")
+            redownload_all_action = menu.addAction("Re-download All in High Quality")
+        else:
+            redownload_all_action = None
         if data.get("type") == "track" and data.get("file_path"):
             remove_action = menu.addAction("Remove and Delete File")
+            redownload_action = menu.addAction("Re-download in High Quality")
+        else:
+            redownload_action = None
         action = menu.exec_(self.list_widget.mapToGlobal(point))
         if action == add_to_playlist_action:
             self.add_to_playlist_requested.emit(data)
@@ -879,3 +887,7 @@ class QueuePanel(QWidget):
             self.delete_playlist_requested.emit(data)
         elif action == remove_action:
             self.remove_requested.emit(data)
+        elif action == redownload_action:
+            self.redownload_requested.emit(data)
+        elif action == redownload_all_action:
+            self.redownload_all_requested.emit(data)
